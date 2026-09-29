@@ -77,23 +77,30 @@ uv run python -m portsim.evaluate loads plan.csv --data out
 ```
 
 - **docks**: one row per dock visit, with columns `event_id` (from `gate_events`), `dock_id` and `planned_start`
-  (written like the times in `gate_events`). Each dock serves its visits in order of planned start, each as soon as
-  the truck has reached the dock, its cargo is ready and the dock is free; a dock is never held idle for a later
-  start. Arrival and service times are the recorded ones. A truck at another line's dock takes the pooled
-  reference's extra 15 min (invented). Hazmat trucks use H docks, the others G docks. Today's practice in this form
-  is `gate_events[["event_id", "dock_id", "dock_start"]]` with `dock_start` renamed `planned_start`.
+  (written like the times in `gate_events`, `2026-09-14 08:05:00`, and not before the visit's own date). Each dock
+  serves its visits in order of planned start, each as soon as the truck has reached the dock, its cargo is ready
+  and the dock is free; a dock is never held idle for a later start. Arrival and service times are the recorded
+  ones. A truck at another line's dock takes the pooled reference's extra 15 min (invented). Hazmat trucks use H
+  docks, the others G docks. Today's practice in this form is `gate_events[["event_id", "dock_id", "dock_start"]]`
+  with `dock_start` renamed `planned_start`.
 - **loads**: one row per order, with columns `order_id`, `truck_id` (any label, unique within the date),
-  `vehicle_type`, and optionally `hold` (1 keeps the order back for inspection; it is not loaded that evening).
-  One destination per truck; weight and volume within the vehicle (its full volume; trucks above the 90% fill limit
-  are counted); declared hazmat orders only with declared hazmat orders. The output counts hidden hazmat held,
-  ordinary orders held, and trucks still carrying hidden hazmat.
+  `vehicle_type`, and optionally `hold` (1, true, yes or 是 keeps the order back for inspection, and it is not
+  loaded that evening; empty, 0, false, no or 否 does not; anything else is refused). One destination per truck;
+  weight and volume within the vehicle; declared hazmat orders only with declared hazmat orders. A plan may fill a
+  truck to its full volume, while today's practice packs to 90% (a leftover under 3 m3 aside), so the output puts
+  the number of trucks above 90% next to the truck count; read them together. The output also counts hidden hazmat
+  held, ordinary orders held, and trucks still carrying hidden hazmat.
 - A plan may cover some dates only, such as the one day of a 48-hour slice. Every visit or order of a date it
-  covers must be in it, and only those dates are scored.
+  covers must be in it, and only those dates are scored. In a dock plan, the visits of other dates keep their
+  recorded dock, and their recorded start as their place in each dock's order; a plan's visits can therefore make
+  them start at other times. They are not scored, and the output says how many moved.
 - `--data` must be a folder written by `python -m portsim`. The evaluator rebuilds the data from the config in
-  `answer_key/baseline_summary.json` and checks it against `clean/gate_events.csv`, so the parts a team cannot see
-  (which visit waits for which, the hidden hazmat) are scored as they really are in the data.
+  `answer_key/baseline_summary.json` and refuses the folder unless the rebuilt visits match
+  `clean/gate_events.csv`, so the parts a team cannot see (which visit waits for which, the hidden hazmat) are
+  scored as they really are in the data. The plan may be UTF-8 or GB18030 (Excel's CSV on a Chinese system).
 - A dock plan made knowing every arrival in advance overstates what a dispatcher deciding in real time can reach;
-  say so beside any number from it. Every number follows the rule below.
+  say so beside any number from it. Arrivals stay as recorded, so a plan that keeps a vehicle's earlier visit
+  longer can have that vehicle at the port twice at once; this is not checked. Every number follows the rule below.
 
 ## Using the numbers (team rule, 2026-09-29)
 

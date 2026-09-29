@@ -14,7 +14,7 @@ sessions there, not here: a session opened here gets a separate, empty memory st
 ## Commands
 
 ```bash
-uv run pytest -q                       # 60 tests, about 40 s to two minutes depending on load
+uv run pytest -q                       # 68 tests, about 45 s to two minutes depending on load
 uv run python -m portsim --out out     # about 5 s, 6 MB
 ```
 
@@ -54,8 +54,10 @@ them changes every output.
 `python -m portsim.evaluate docks|loads PLAN.csv --data DIR` rebuilds a folder's data from the config stored in its
 `answer_key/baseline_summary.json` and scores a team's dock or load plan, and today's practice turned into a plan
 of the same form, with the same functions (`docksim.kpis`; the load KPIs mirror the summary's). Tests require
-today's practice scored this way to reproduce the summary's baseline and pooled numbers exactly. The README
-("Scoring a plan") gives the plan formats.
+today's practice scored this way to reproduce the summary's baseline and pooled numbers exactly, and a one-day plan
+to reproduce that day's numbers. The README ("Scoring a plan") gives the plan formats. In a partial dock plan the
+other dates' visits keep their recorded dock and start as their place in the order; the output counts those whose
+times the plan moved (they are not scored), and a planned start before the visit's own date is refused.
 
 ## Conventions
 
@@ -86,4 +88,10 @@ today's practice scored this way to reproduce the summary's baseline and pooled 
   tests were not checked this way. Fourth round (2026-09-29, `tests/test_evaluate.py`): 17 broken copies of
   `evaluate.py` (no cross-dock penalty, cargo readiness ignored, no cycle, coverage, hazmat-dock, tie, duplicate,
   destination, capacity, hazmat-mix, empty-plan or folder-match check, KPIs over uncovered dates, holds ignored,
-  unrounded load factors, hidden conflicts judged on declared classes); each failed the tests aimed at it.
+  unrounded load factors, hidden conflicts judged on declared classes); each failed the tests aimed at it. That
+  claim was too broad: the independent review of 2026-09-29 found five more broken copies that passed (utilization
+  over the full horizon, today's loads not limited to the plan's dates, the fill limit at full volume, a tie check
+  that ignored other dates, other dates' visits ordered by id). Fifth round, with the review's fixes: 31 broken
+  copies, the earlier 17, those five and nine aimed at the new checks (starts before the visit's date, the moved
+  count, unclear or all holds, "1.0" as a hold, GB18030, an empty file, an unknown config option, a missing
+  gate_events.csv); each failed the tests aimed at it.

@@ -3,6 +3,7 @@ that break a rule must be refused with a readable message."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pandas as pd
@@ -13,6 +14,7 @@ from portsim import evaluate as ev
 from portsim import reference as ref
 from portsim.build import _times
 from portsim.dispatch import first_fit_decreasing
+from portsim.docksim import kpis
 
 CFG = Config(trajectories=False, messy=False)
 
@@ -50,13 +52,64 @@ def test_pooled_reference_as_a_plan_reproduces_its_numbers(ctx, built):
     assert res["plan"]["visits_at_another_lines_dock"] > 0
 
 
-def test_a_one_day_plan_scores_that_day_only(ctx):
+def test_a_one_day_plan_scores_that_day_only(ctx, built):
     g = ctx["gate_events"]
-    day = g["date"].iloc[0]
+    day = sorted(set(g["date"]))[3]  # a middle day, with other days' visits on both sides
     plan = ev.today_dock_plan(ctx)[g["date"] == day]
     res = ev.evaluate_docks(ctx, plan)
     assert res["dates"] == [day]
-    assert res["today"]["dock_visits"] == int((g["date"] == day).sum())
+    sim = built["internal"]["sim"]
+    ids = set(g.loc[g["date"] == day, "event_id"])
+    want = kpis(ctx["ops"], sim[sim["op_id"].isin(ids)], ctx["docks"], dataclasses.replace(CFG, days=1))
+    assert _drop_extra(res["today"]) == want
+    assert res["plan"] == res["today"]
+    assert res["other_dates_visits_moved"] == 0
+
+
+def _dock_times(ctx) -> pd.DataFrame:
+    g = ctx["gate_events"].copy()
+    g["start"], g["end"] = pd.to_datetime(g["dock_start"]), pd.to_datetime(g["dock_end"])
+    return g
+
+
+def test_a_plan_that_delays_another_dates_visit_says_so(ctx):
+    g = _dock_times(ctx)
+    day, nxt = sorted(set(g["date"]))[:2]
+    general = set(ctx["docks"].loc[ctx["docks"]["dock_type"] == "general", "dock_id"])
+    # a visit of the next day that queued behind another visit of that day, so anything put between them delays it
+    v = None
+    for _, grp in g[g["dock_id"].isin(general)].sort_values("start").groupby("dock_id", sort=True):
+        prev = grp.shift(1)
+        hit = grp[(grp["date"] == nxt) & (prev["date"] == nxt) & (grp["start"] == prev["end"])]
+        if len(hit):
+            v = hit.iloc[0]
+            break
+    assert v is not None
+    u = g[(g["date"] == day) & (g["op_type"] == "delivery_in") & ~g["hazmat"] & (g["dock_id"] != v["dock_id"])].iloc[0]
+    plan = ev.today_dock_plan(ctx)[g["date"] == day].copy()
+    before_v = (v["start"] - pd.Timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    plan.loc[plan["event_id"] == u["event_id"], ["dock_id", "planned_start"]] = [v["dock_id"], before_v]
+    res = ev.evaluate_docks(ctx, plan)
+    assert res["other_dates_visits_moved"] >= 1
+    assert any("not scored" in n for n in res["notes"])
+
+
+def test_other_dates_moved_counts_changed_starts(ctx):
+    g = ctx["gate_events"]
+    day = sorted(set(g["date"]))[0]
+    sim, covered = ev.schedule_docks(ctx, ev.today_dock_plan(ctx)[g["date"] == day])
+    assert ev.other_dates_moved(ctx, sim, covered) == 0
+    sim.loc[sim.index[~sim["op_id"].isin(covered)][:2], "dock_start"] += 1
+    assert ev.other_dates_moved(ctx, sim, covered) == 2
+
+
+def test_a_planned_start_before_the_visits_date_is_refused(ctx):
+    g = ctx["gate_events"]
+    day = sorted(set(g["date"]))[1]
+    plan = ev.today_dock_plan(ctx)[g["date"] == day].copy()
+    plan.iloc[0, plan.columns.get_loc("planned_start")] = "2016-09-15 08:00:00"
+    with pytest.raises(ev.PlanError, match="before the visit's own date"):
+        ev.evaluate_docks(ctx, plan)
 
 
 def test_a_day_with_a_visit_left_out_is_refused(ctx):
@@ -109,6 +162,17 @@ def test_two_visits_with_the_same_dock_and_start_are_refused(ctx):
         ev.evaluate_docks(ctx, plan)
 
 
+def test_a_plan_visit_tied_with_another_dates_visit_is_refused(ctx):
+    g = ctx["gate_events"]
+    day, nxt = sorted(set(g["date"]))[:2]
+    v = g[(g["date"] == nxt) & ~g["hazmat"]].iloc[0]
+    u = g[(g["date"] == day) & ~g["hazmat"]].iloc[0]
+    plan = ev.today_dock_plan(ctx)[g["date"] == day].copy()
+    plan.loc[plan["event_id"] == u["event_id"], ["dock_id", "planned_start"]] = [v["dock_id"], v["dock_start"]]
+    with pytest.raises(ev.PlanError, match="share a dock and a planned start"):
+        ev.evaluate_docks(ctx, plan)
+
+
 # ----------------------------------------------------------------------------------------------------- loads
 
 
@@ -124,16 +188,16 @@ def test_today_as_a_load_plan_reproduces_the_baseline(ctx):
     assert got == res["today"]
 
 
-def _pooled_by_destination(ctx, day: str) -> pd.DataFrame:
+def _pooled_by_destination(ctx, day: str, fill: float = CFG.volume_fill_limit) -> pd.DataFrame:
     """A simple pooled plan: one evening's orders to each city packed together into that city's largest standard
-    truck (declared hazmat apart), first-fit-decreasing at the 90% fill limit."""
+    truck (declared hazmat apart), first-fit-decreasing up to `fill` of the volume (default the 90% fill limit)."""
     o = ctx["orders"][ctx["orders"]["date"] == day]
     std = ctx["lines"].set_index("line_id")["standard_vehicle"]
     rows = []
     for (dest, hz), grp in o.groupby([o["destination"], o["hazmat_class"] != ""], sort=True):
         vt = max(set(std[grp["line_id"]]), key=lambda t: ref.VEHICLE_TYPES[t][2])
         _, kg, m3 = ref.VEHICLE_TYPES[vt]
-        for k, idx in enumerate(first_fit_decreasing(grp, kg, m3 * CFG.volume_fill_limit)):
+        for k, idx in enumerate(first_fit_decreasing(grp, kg, m3 * fill)):
             for i in idx:
                 rows.append({"order_id": grp.at[i, "order_id"], "truck_id": f"{dest}-{int(hz)}-{k}",
                              "vehicle_type": vt})
@@ -146,6 +210,24 @@ def test_pooling_by_destination_needs_fewer_and_fuller_trucks(ctx):
     assert res["dates"] == [day]
     assert res["plan"]["trucks"] < res["today"]["trucks"]
     assert res["plan"]["mean_load_factor"] > res["today"]["mean_load_factor"]
+    assert res["plan"]["trucks_over_volume_fill_limit"] == 0
+
+
+def test_trucks_filled_above_the_limit_are_counted(ctx):
+    day = ctx["orders"]["date"].iloc[0]
+    full = ev.evaluate_loads(ctx, _pooled_by_destination(ctx, day, fill=1.0))
+    assert full["plan"]["trucks_over_volume_fill_limit"] > 0
+    assert any("trucks_over_volume_fill_limit" in n for n in full["notes"])
+
+
+def test_a_one_day_load_plan_compares_with_that_days_trucks(ctx):
+    day = sorted(set(ctx["orders"]["date"]))[3]
+    plan = ev.today_load_plan(ctx)[ctx["orders"]["date"] == day]
+    res = ev.evaluate_loads(ctx, plan)
+    t = ctx["baseline_dispatch"]
+    assert res["dates"] == [day]
+    assert res["today"]["trucks"] == int((t["date"] == day).sum())
+    assert res["plan"] == res["today"]
 
 
 def _one_day_today(ctx):
@@ -225,6 +307,18 @@ def test_holding_orders_is_scored_against_the_hidden_hazmat(ctx):
     assert got["hidden_hazmat_orders"] == n and got["hidden_hazmat_held"] == n
     assert got["ordinary_orders_held"] == 1 and got["orders_held"] == n + 1
     assert got["trucks_carrying_hidden_hazmat"] == 0
+    plan.loc[hold, "hold"] = "1.0"  # a numeric column saved by Excel or pandas
+    assert ev.evaluate_loads(ctx, plan)["plan"] == got
+
+
+def test_an_unclear_hold_or_holding_everything_is_refused(ctx):
+    plan = _one_day_today(ctx)
+    plan.loc[0, "hold"] = "maybe"
+    with pytest.raises(ev.PlanError, match="hold must be"):
+        ev.evaluate_loads(ctx, plan)
+    plan["hold"] = "是"
+    with pytest.raises(ev.PlanError, match="every order is held"):
+        ev.evaluate_loads(ctx, plan)
 
 
 # ------------------------------------------------------------------------------------------------------- CLI
@@ -245,6 +339,42 @@ def test_cli_scores_a_plan_and_refuses_a_bad_one(tmp_path, capsys):
         ev.main(["docks", str(plan), "--data", str(out)])
     assert e.value.code == 1
     assert "leaves out" in capsys.readouterr().err
+
+
+def test_cli_reads_a_gb18030_plan_and_refuses_unreadable_input(tmp_path, capsys):
+    cfg = Config(days=2, trajectories=False)
+    out = tmp_path / "out"
+    write_dataset(build_dataset(cfg), out)
+    o = pd.read_csv(out / "clean" / "orders.csv", dtype=str, keep_default_na=False)
+    t = pd.read_csv(out / "clean" / "baseline_dispatch.csv", dtype=str, keep_default_na=False)
+    plan = tmp_path / "plan.csv"
+    today = pd.DataFrame({"order_id": o["order_id"], "truck_id": o["baseline_truck_id"],
+                          "vehicle_type": o["baseline_truck_id"].map(t.set_index("truck_id")["vehicle_type"]),
+                          "hold": ["否"] * len(o)})
+    today.to_csv(plan, index=False, encoding="gb18030")
+    ev.main(["loads", str(plan), "--data", str(out), "--json"])
+    res = json.loads(capsys.readouterr().out)
+    assert res["plan"] == res["today"]
+
+    plan.write_bytes(b"")
+    with pytest.raises(SystemExit) as e:
+        ev.main(["loads", str(plan), "--data", str(out)])
+    assert e.value.code == 1 and "is empty" in capsys.readouterr().err
+
+    today.to_csv(plan, index=False)
+    s = json.loads((out / "answer_key" / "baseline_summary.json").read_text(encoding="utf-8"))
+    s["config"]["new_option"] = 1
+    (out / "answer_key" / "baseline_summary.json").write_text(json.dumps(s), encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        ev.main(["loads", str(plan), "--data", str(out)])
+    assert e.value.code == 1 and "new_option" in capsys.readouterr().err
+
+    del s["config"]["new_option"]
+    (out / "answer_key" / "baseline_summary.json").write_text(json.dumps(s), encoding="utf-8")
+    (out / "clean" / "gate_events.csv").unlink()
+    with pytest.raises(SystemExit) as e:
+        ev.main(["loads", str(plan), "--data", str(out)])
+    assert e.value.code == 1 and "gate_events.csv not found" in capsys.readouterr().err
 
 
 def test_cli_refuses_a_folder_that_does_not_match_its_config(tmp_path, capsys):

@@ -12,12 +12,16 @@ docks: one row per dock visit (event_id from gate_events) with the dock that ser
        for have finished) and the dock is free; a dock is never held idle for a later planned start. Arrival and
        service times are the recorded ones. A general truck at another line's dock takes the pooled reference's
        extra handling (cross_dock_penalty_min, an invented 15 min). Hazmat trucks use hazmat docks, others general
-       docks. Visits on dates the plan does not cover keep their recorded dock and order.
+       docks. A planned start before the visit's own date is refused. Visits on dates the plan does not cover keep
+       their recorded dock, and their recorded start as their place in the dock's order, so the plan's visits can
+       make them start at other times than recorded; they are not scored, and the output counts those that moved.
 loads: one row per order (order_id) with the truck it leaves on (truck_id, any label, unique within the date) and
        the truck's vehicle_type; or hold = 1 to keep the order back for inspection, in which case it is not loaded
-       that evening. The orders on one truck share a destination; their weight and volume fit the vehicle (full
-       volume; trucks above the 90% fill limit are counted); declared hazmat orders ride only with declared hazmat
-       orders.
+       that evening (hold may be empty, 0/1, true/false, yes/no or 是/否). The orders on one truck share a
+       destination; their weight and volume fit the vehicle; declared hazmat orders ride only with declared hazmat
+       orders. A plan may fill a truck to its full volume, while today's practice packs to the 90% fill limit
+       (config volume_fill_limit; a leftover under 3 m3 is squeezed in above it): trucks above that limit are
+       counted next to the truck count.
 
 Both are scored on the dataset rebuilt from the config in <data>/answer_key/baseline_summary.json, so the parts a
 team cannot see (which visit waits for which, hidden hazmat) are the true ones. Today's practice is turned into a
@@ -41,11 +45,16 @@ from .config import Config
 from .dispatch import conflicts
 from .docksim import kpis
 
-HOLD_VALUES = {"1", "true", "yes", "y", "是"}
+HOLD_YES = {"1", "1.0", "true", "yes", "y", "是"}
+HOLD_NO = {"", "0", "0.0", "false", "no", "n", "否"}
 NOTE = ("模拟数据 (simulated data): compare only with today's practice in this data, labelled 模拟数据; "
         "see README 'Using the numbers'.")
 DOCK_NOTE = ("The plan is scored against the recorded arrivals. A plan made knowing every arrival in advance "
-             "(hindsight) overstates what a dispatcher deciding in real time can reach.")
+             "(hindsight) overstates what a dispatcher deciding in real time can reach. Each visit keeps its "
+             "recorded arrival even when the plan keeps the same vehicle's earlier visit longer, so a plan can have "
+             "one vehicle at the port twice at once; this is not checked.")
+LOAD_NOTE = ("A plan may fill a truck to its full volume; today's practice packs to the 90% fill limit. Read the "
+             "truck count together with trucks_over_volume_fill_limit.")
 
 
 class PlanError(ValueError):
@@ -59,14 +68,19 @@ def load_context(data: Path) -> dict:
     if not summary_path.exists():
         raise PlanError(f"{summary_path} not found: --data must be a folder written by `python -m portsim`")
     stored = json.loads(summary_path.read_text(encoding="utf-8"))["config"]
-    ctx = context_from_config(Config(**stored))
+    unknown = set(stored) - {f.name for f in dataclasses.fields(Config)}
+    if unknown:
+        raise PlanError(f"{summary_path} has config option(s) this generator version does not know: "
+                        f"{_few(unknown)} (another generator version; see README 'Run')")
     recorded = data / "clean" / "gate_events.csv"
-    if recorded.exists():
-        rec = pd.read_csv(recorded, dtype=str, keep_default_na=False)
-        rebuilt = ctx["gate_events"]
-        if list(rec["event_id"]) != list(rebuilt["event_id"]) or list(rec["gate_in"]) != list(rebuilt["gate_in"]):
-            raise PlanError(f"the rebuilt data does not match {recorded}: another generator version or other "
-                            "package versions (see README 'Run')")
+    if not recorded.exists():
+        raise PlanError(f"{recorded} not found: it is needed to check that the rebuilt data matches the folder")
+    ctx = context_from_config(Config(**stored))
+    rec = pd.read_csv(recorded, dtype=str, keep_default_na=False)
+    rebuilt = ctx["gate_events"]
+    if list(rec["event_id"]) != list(rebuilt["event_id"]) or list(rec["gate_in"]) != list(rebuilt["gate_in"]):
+        raise PlanError(f"the rebuilt data does not match {recorded}: another generator version or other "
+                        "package versions (see README 'Run')")
     return ctx
 
 
@@ -106,6 +120,24 @@ def _few(items) -> str:
     return ", ".join(items[:5]) + (f" and {len(items) - 5} more" if len(items) > 5 else "")
 
 
+def read_plan(path) -> pd.DataFrame:
+    """Read a plan CSV as text: UTF-8 (with or without BOM), or GB18030 as Excel saves CSV on a Chinese system."""
+    for enc in ("utf-8-sig", "gb18030"):
+        try:
+            return pd.read_csv(path, dtype=str, keep_default_na=False, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+        except pd.errors.EmptyDataError:
+            raise PlanError(f"{path} is empty") from None
+        except pd.errors.ParserError as e:
+            raise PlanError(f"{path} is not a readable CSV: {e}") from None
+    raise PlanError(f"{path} is neither UTF-8 nor GB18030 text; save it as CSV (UTF-8)")
+
+
+def _minutes(ctx: dict, times: pd.Series) -> pd.Series:
+    return (pd.to_datetime(times, format=TIME_FMT) - pd.Timestamp(ctx["cfg"].start_date)) / pd.Timedelta(minutes=1)
+
+
 # ----------------------------------------------------------------------------------------------------- docks
 
 
@@ -142,6 +174,9 @@ def schedule_docks(ctx: dict, plan: pd.DataFrame) -> tuple[pd.DataFrame, list[st
         raise PlanError(f"planned_start must be written like 2026-09-14 08:05:00; unreadable for "
                         f"{_few(set(plan.loc[starts.isna(), 'event_id']))}")
     plan["key"] = (starts - pd.Timestamp(cfg.start_date)) / pd.Timedelta(minutes=1)
+    early = plan.loc[starts.to_numpy() < pd.to_datetime(date_of[plan["event_id"]]).to_numpy(), "event_id"]
+    if len(early):
+        raise PlanError(f"planned_start before the visit's own date: {_few(set(early))}")
 
     rows = ops[ops["gate_in"].notna()].set_index("op_id")
     hz = rows.loc[plan["event_id"], "hazmat"].to_numpy()
@@ -149,10 +184,10 @@ def schedule_docks(ctx: dict, plan: pd.DataFrame) -> tuple[pd.DataFrame, list[st
     if len(wrong):
         raise PlanError(f"hazmat trucks must use hazmat docks and other trucks general docks: {_few(set(wrong))}")
 
-    # visits of dates the plan does not cover keep their recorded dock and order
+    # visits of dates the plan does not cover keep their recorded dock, and their recorded start as their place
     rest = today_dock_plan(ctx)
     rest = rest[~rest["event_id"].isin(covered)].copy()
-    rest["key"] = (pd.to_datetime(rest["planned_start"], format=TIME_FMT) - pd.Timestamp(cfg.start_date)) / pd.Timedelta(minutes=1)
+    rest["key"] = _minutes(ctx, rest["planned_start"])
     full = pd.concat([plan[["event_id", "dock_id", "key"]], rest[["event_id", "dock_id", "key"]]], ignore_index=True)
     tie = full[full.duplicated(["dock_id", "key"], keep=False)]
     if len(tie):
@@ -213,12 +248,25 @@ def _dock_kpis(ctx: dict, sim: pd.DataFrame, covered: list[str]) -> dict:
     return out
 
 
+def other_dates_moved(ctx: dict, sim: pd.DataFrame, covered: list[str]) -> int:
+    """How many visits of dates the plan does not cover start at another time than recorded."""
+    g = ctx["gate_events"]
+    recorded = pd.Series(_minutes(ctx, g["dock_start"]).to_numpy(), index=g["event_id"])
+    rest = sim[~sim["op_id"].isin(covered)]
+    return int((rest["dock_start"].to_numpy() != recorded[rest["op_id"]].to_numpy()).sum())
+
+
 def evaluate_docks(ctx: dict, plan: pd.DataFrame) -> dict:
     sim, covered = schedule_docks(ctx, plan)
     today, _ = schedule_docks(ctx, today_dock_plan(ctx))
     dates = sorted(set(ctx["gate_events"].loc[ctx["gate_events"]["event_id"].isin(covered), "date"]))
+    notes = [NOTE, DOCK_NOTE]
+    moved = other_dates_moved(ctx, sim, covered)
+    if moved:
+        notes.append(f"{moved} visit(s) on dates the plan does not cover start at other times than recorded "
+                     "because of the plan's dock order; they are not scored.")
     return {"dates": dates, "today": _dock_kpis(ctx, today, covered), "plan": _dock_kpis(ctx, sim, covered),
-            "notes": [NOTE, DOCK_NOTE]}
+            "other_dates_visits_moved": moved, "notes": notes}
 
 
 # ----------------------------------------------------------------------------------------------------- loads
@@ -252,7 +300,13 @@ def evaluate_load_plan(ctx: dict, plan: pd.DataFrame) -> dict:
         raise PlanError(f"the plan covers {sorted(dates)} but leaves out {len(missing)} order(s) of those dates: "
                         f"{_few(missing)}")
 
-    held = plan["hold"].str.lower().isin(HOLD_VALUES)
+    hold = plan["hold"].str.lower()
+    odd = plan.loc[~hold.isin(HOLD_YES | HOLD_NO), "order_id"]
+    if len(odd):
+        raise PlanError(f"hold must be empty, 0/1, true/false, yes/no or 是/否: {_few(set(odd))}")
+    held = hold.isin(HOLD_YES)
+    if held.all():
+        raise PlanError("every order is held, so nothing is loaded")
     loaded = plan[~held].join(orders, on="order_id")
     no_truck = loaded.loc[(loaded["truck_id"] == "") | ~loaded["vehicle_type"].isin(list(ref.VEHICLE_TYPES)),
                           "order_id"]
@@ -298,12 +352,12 @@ def evaluate_load_plan(ctx: dict, plan: pd.DataFrame) -> dict:
     hidden_ids = set(hidden.index) & covered
     return {
         "trucks": int(len(t)),
+        "trucks_over_volume_fill_limit": int(t["over_fill_limit"].sum()),
         "trucks_per_day": round(len(t) / len(dates), 1),
         "trucks_by_type": {k: int(v) for k, v in t["vehicle_type"].value_counts().sort_index().items()},
         "truck_km": int(round(t["km"].sum())),
         "mean_load_factor": round(float(t["load_factor"].mean()), 3),
         "share_trucks_below_60pct_load": round(float((t["load_factor"] < 0.6).mean()), 3),
-        "trucks_over_volume_fill_limit": int(t["over_fill_limit"].sum()),
         "trucks_with_illustrative_conflict": int(t["declared_conflict"].sum()),
         "orders_held": len(held_ids),
         "hidden_hazmat_orders": len(hidden_ids),
@@ -320,14 +374,17 @@ def evaluate_loads(ctx: dict, plan: pd.DataFrame) -> dict:
     dates = sorted(set(orders.loc[orders["order_id"].isin(set(plan["order_id"].astype(str).str.strip())), "date"]))
     today = today_load_plan(ctx)
     today = today[today["order_id"].isin(set(orders.loc[orders["date"].isin(dates), "order_id"]))]
-    return {"dates": dates, "today": evaluate_load_plan(ctx, today), "plan": result, "notes": [NOTE]}
+    return {"dates": dates, "today": evaluate_load_plan(ctx, today), "plan": result, "notes": [NOTE, LOAD_NOTE]}
 
 
 # ------------------------------------------------------------------------------------------------------- CLI
 
 
 def _table(res: dict) -> str:
-    lines = [f"dates: {res['dates'][0]} to {res['dates'][-1]} ({len(res['dates'])})", "",
+    lines = [f"dates: {res['dates'][0]} to {res['dates'][-1]} ({len(res['dates'])})"]
+    if "other_dates_visits_moved" in res:
+        lines.append(f"visits on other dates that the plan moved (not scored): {res['other_dates_visits_moved']}")
+    lines += ["",
              f"{'metric':44} {'today':>14} {'plan':>14} {'plan - today':>14}"]
     for k, a in res["today"].items():
         b = res["plan"][k]
@@ -347,7 +404,7 @@ def main(argv=None) -> None:
     p.add_argument("--json", action="store_true", help="print JSON instead of a table")
     a = p.parse_args(argv)
     try:
-        plan = pd.read_csv(a.plan, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        plan = read_plan(a.plan)
         ctx = load_context(Path(a.data))
         res = (evaluate_docks if a.kind == "docks" else evaluate_loads)(ctx, plan)
     except (PlanError, FileNotFoundError) as e:
