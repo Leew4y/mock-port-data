@@ -5,13 +5,14 @@ import os
 import subprocess
 import sys
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from portsim import Config, build_dataset, write_dataset
 from portsim import messy as mz
 from portsim.dispatch import conflicts, first_fit_decreasing
-from portsim.entities import OUT_FLEET
+from portsim.entities import OUT_FLEET, PlateBook, make_lines
 from portsim import reference as ref
 
 
@@ -65,6 +66,12 @@ def test_days_out_of_range_is_refused(days):
         Config(days=days)
 
 
+@pytest.mark.parametrize("start", ["notadate", "2026-02-30"])
+def test_bad_start_date_is_refused(start):
+    with pytest.raises(ValueError, match="start_date"):
+        Config(start_date=start)
+
+
 def test_cli_refuses_bad_days_with_a_usage_error(capsys, tmp_path):
     from portsim.cli import main
 
@@ -81,12 +88,16 @@ def test_written_tables_have_no_internal_columns(ds):
 
 
 def test_hazmat_lines_are_sized_by_expected_weight(ds):
-    from portsim.entities import HAZMAT_MEAN_ORDER_KG, HAZMAT_VEHICLE_LIMITS
-
+    """A hazmat line's truck is sized by expected kilograms, not by volume as a general line's is. By default both
+    hazmat lines expect under 6 t a day and get a 6.8m truck. Busier hazmat lines (up to 20 orders, 7.6 t a day)
+    whose volume still fits a 6.8m truck (30 m3) must get a 9.6m truck from the weight rule."""
     lines = ds["internal"]["lines"]
-    for line in lines[lines["hazmat_qualified"]].itertuples():
-        kg = line.x_lam * HAZMAT_MEAN_ORDER_KG
-        assert line.standard_vehicle == next((vt for vt, limit in HAZMAT_VEHICLE_LIMITS if kg <= limit), "13m")
+    assert (lines.loc[lines["hazmat_qualified"], "standard_vehicle"] == "6.8m").all()
+    cfg = Config(mean_orders_per_line_day=80.0, mean_order_volume_m3=1.0)
+    busy = make_lines(cfg, np.random.default_rng(0), PlateBook())
+    hz = busy[busy["hazmat_qualified"]]
+    assert (hz["x_lam"] * cfg.mean_order_volume_m3 <= 30).all()  # sized by volume, they would get a 6.8m truck
+    assert (hz["standard_vehicle"] == "9.6m").any()
 
 
 def test_free_dock_idle_longest_is_taken():

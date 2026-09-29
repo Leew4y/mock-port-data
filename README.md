@@ -17,7 +17,7 @@ uv run python -m portsim --out out
 uv run pytest
 ```
 
-Options: `--seed`, `--days` (1 to 365, default 14), `--start-date` (default 2026-09-14), `--no-trajectories`,
+Options: `--seed`, `--days` (1 to 365, default 14), `--start-date` (YYYY-MM-DD, default 2026-09-14), `--no-trajectories`,
 `--no-messy`. The same seed gives byte-identical files, whatever `PYTHONHASHSEED` is, with the versions locked in
 `uv.lock` under Python 3.13 (`.python-version`; numpy 2.5.3, pandas 3.0.6); other versions may change the numbers.
 A 14-day run takes a few

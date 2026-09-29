@@ -12,13 +12,14 @@ own git repository, so a session opened here gets a separate, empty memory store
 Run Python through the memory guard (the user-level hook refuses `uv run` without it):
 
 ```bash
-python3 ~/.claude/scripts/local_guard.py --max-gb 2 --wait 600 -- uv run pytest -q       # 40 tests, about 35 s
+python3 ~/.claude/scripts/local_guard.py --max-gb 2 --wait 600 -- uv run pytest -q       # 42 tests, about 35 s
 python3 ~/.claude/scripts/local_guard.py --max-gb 1 --wait 600 -- uv run python -m portsim --out out   # about 5 s, 6 MB
 ```
 
 The lock is shared with other sessions' long jobs; a call waiting for it can outlast the Bash tool's 2-minute
 default, so run it in the background or give it a 600000 ms timeout. Options: `--seed`, `--days` (1 to 365),
-`--start-date`, `--no-trajectories`, `--no-messy`. `out/` is ignored.
+`--start-date` (YYYY-MM-DD), `--no-trajectories`, `--no-messy`; a bad `--days` or `--start-date` is a usage
+error. `out/` is ignored.
 
 ## How a build runs (`portsim/build.py`)
 
@@ -42,8 +43,8 @@ them changes every output.
 ## Conventions
 
 - Every port parameter is an invented assumption; the docs say so. The main ones live in `config.py` and
-  `reference.py`; the rest are hard-coded in the other modules, and `docs/data_dictionary.md` (top) lists them by
-  module. A new hard-coded value goes into that list. `hazmat_rules_illustrative` is not the JT/T 617 table.
+  `reference.py`; the rest are hard-coded in the other modules, and `docs/data_dictionary.md` (top) lists by module
+  the ones that shape the data (small noise terms, such as GPS jitter, are left out). A new one goes into that list. `hazmat_rules_illustrative` is not the JT/T 617 table.
 - The same seed gives byte-identical files in any process (`test_output_does_not_depend_on_hash_seed`): output must
   not depend on set or dict iteration order.
 - Internal columns start with `x_` (pandas `itertuples` renames columns that start with `_`) and are dropped from
@@ -55,7 +56,12 @@ them changes every output.
   trajectory horizon, plate clash check, downsizing, hidden hazmat unit): the trajectory test was strengthened after
   its first attempt missed; one first run failed on a bug in the mutation script and passed when rerun. Second round
   (hidden hazmat weight and density, dock tie-break, the 3 m3 squeeze, hazmat line sizing, the saturated-port plate
-  fix, internal columns, the CLI usage error, fleet plates): all caught. The fleet-plate test first ran on the
-  default port, where no line sends more than one own truck a day, and missed a bug that gave every own truck the
-  same plate; it now builds with small standard trucks and the post-simulation plate fix switched off. Older tests
-  were not checked this way.
+  fix, internal columns, the CLI usage error, fleet plates): each test failed on the broken copy aimed at it. The
+  one-line-one-day plate test first ran on the default port, where no line sends more than one own truck a day, and
+  missed a bug that gave every own truck the same plate; it now builds with small standard trucks and the
+  post-simulation plate fix switched off. That same bug leaves the default-port fleet test passing, as expected: it
+  checks that plates come from the right fleet, and fails when inbound trucks take outbound plates. Third round,
+  after the second review: the hazmat sizing test, which on the default seed could not tell the weight rule from a
+  fixed 6.8m or from the volume rule, now also builds busier hazmat lines; the start-date check is new. The rounds
+  ran on the working tree just before each commit (scratch harness `mut3.py`, not kept in the repository). Older
+  tests were not checked this way.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -41,5 +42,9 @@ class Config:
         # ids carry the date as MMDD, so a run longer than a year would repeat them
         if not 1 <= self.days <= 365:
             raise ValueError(f"days must be between 1 and 365, got {self.days}")
+        try:
+            date.fromisoformat(self.start_date)
+        except (TypeError, ValueError):
+            raise ValueError(f"start_date must be a date as YYYY-MM-DD, got {self.start_date!r}") from None
         if self.n_general_docks < self.n_general_lines:
             raise ValueError("every general line needs at least one dock")

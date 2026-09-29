@@ -3,18 +3,22 @@
 All data is synthetic. Every number below that describes the port (dock counts, service rates, delays, shares) is an
 invented assumption chosen so that queues and half-empty trucks appear at a plausible scale; none was measured at
 a Transfar port. Most are in `portsim/config.py` and `portsim/reference.py`; the rest are hard-coded in the modules
-of `portsim/`:
+of `portsim/`. Those that shape the data (small noise terms, such as GPS jitter, are left out):
 
 - `entities.py`: the limits that size a line's standard truck and its hazmat trucks, 6 outbound and 6 inbound fleet
   trucks per line, the spread of line sizes (hazmat lines get 0.4 of a general line's orders), 600 shippers, order
-  weight (median 250 kg, hazmat 300 kg) and density spreads.
+  weight (median 250 kg, hazmat 300 kg) and density spreads (hazmat goods about 900 kg/m³), 380 kg per order when
+  sizing a hazmat line's truck, one piece per 0.1 m³ (±40%).
 - `dispatch.py`: the overflow truck sizes and the 3 m³ squeeze of a small leftover.
 - `operations.py`: 1 to 4 orders per shipper delivery van (1 + Poisson(0.8)); 6% of inbound linehaul trucks late by
   a further 60 to 240 min; 10 min extra service at hazmat docks; the spread of service times; 5 to 15 min from dock to
-  gate; inbound linehaul trucks per day 0.7 to 1.3 times the outbound ones, filled Beta(6, 3); pickup vans of 8 to
-  14 m³ each, 80% of them 4.2 m where the load allows; at most 3 hired plates per line and truck size.
+  gate; loading booked within ±20 min of its lead time; a booked truck arrives between 45 min early and 300 min late;
+  inbound linehaul trucks per day 0.7 to 1.3 times the outbound ones, filled Beta(6, 3); pickup vans of 8 to 14 m³
+  each, 80% of them 4.2 m where the load allows, booked 0 to 60 min after the inbound truck's expected unloading;
+  at most 3 hired plates per line and truck size.
 - `trajectories.py`: 6% of trucks with an anomaly, 65 km/h ± 15%, at most 180 min of driving before the gate,
-  anomaly lengths (long stop 45 to 90 min, route deviation 30 to 60 min, signal gap 40 to 90 min).
+  anomaly lengths (long stop 45 to 90 min, route deviation 30 to 60 min and 8 to 15 km off the line, signal gap 40
+  to 90 min); an anomaly ends at least 30 min before the gate, and a trip too short for that shows none.
 - `messy.py`: the share of cells changed by each kind of injected issue.
 
 ## The port being simulated
