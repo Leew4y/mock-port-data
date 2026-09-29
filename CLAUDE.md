@@ -1,23 +1,32 @@
 # portsim: mock data for one simulated highway port
 
 Seeded generator of two weeks of synthetic records for one highway freight port (公路港), built for team 不系舟's
-24-hour rehearsal on 2026-10-03 and as a fallback if the official data is late. Its own local git repository,
-nested in `~/Desktop/hackathon` and ignored there. Not on GitHub: putting it in the team org `Leew4y` is the owner's
-call. `README.md` is the user guide; `docs/data_dictionary.md` and `docs/scenario_brief_zh.md` (the mock brief, in
-Chinese) are copied into every output folder. Open sessions in `~/Desktop/hackathon`, not here: this folder is its
-own git repository, so a session opened here gets a separate, empty memory store and misses the event's `NOTES.md`.
+24-hour rehearsal on 2026-10-03 and as a fallback if the official data is late. Private repository in the team's
+GitHub organization, https://github.com/Leew4y/mock-port-data (the owner's decision, 2026-09-29). `README.md` is
+the user guide; `docs/data_dictionary.md` and `docs/scenario_brief_zh.md` (the mock brief, in Chinese) are copied
+into every output folder. Numbers from this data go into a pitch or README only as the README's "Using the numbers"
+section allows.
+
+On the owner's Mac this folder sits inside `~/Desktop/hackathon`, a separate repository that ignores it. Open
+sessions there, not here: a session opened here gets a separate, empty memory store and misses the event's
+`NOTES.md`. In a teammate's clone, this file and the README are the whole context.
 
 ## Commands
 
-Run Python through the memory guard (the user-level hook refuses `uv run` without it):
-
 ```bash
-python3 ~/.claude/scripts/local_guard.py --max-gb 2 --wait 600 -- uv run pytest -q       # 42 tests, about 35 s
-python3 ~/.claude/scripts/local_guard.py --max-gb 1 --wait 600 -- uv run python -m portsim --out out   # about 5 s, 6 MB
+uv run pytest -q                       # 42 tests, about 35 s
+uv run python -m portsim --out out     # about 5 s, 6 MB
 ```
 
-The lock is shared with other sessions' long jobs; a call waiting for it can outlast the Bash tool's 2-minute
-default, so run it in the background or give it a 600000 ms timeout. Options: `--seed`, `--days` (1 to 365),
+On the owner's Mac, run both through the memory guard (the owner's user-level hook refuses `uv run` without it):
+
+```bash
+python3 ~/.claude/scripts/local_guard.py --max-gb 2 --wait 600 -- uv run pytest -q
+python3 ~/.claude/scripts/local_guard.py --max-gb 1 --wait 600 -- uv run python -m portsim --out out
+```
+
+The guard's lock is shared with other sessions' long jobs; a call waiting for it can outlast the Bash tool's
+2-minute default, so run it in the background or give it a 600000 ms timeout. Options: `--seed`, `--days` (1 to 365),
 `--start-date` (YYYY-MM-DD), `--no-trajectories`, `--no-messy`; a bad `--days` or `--start-date` is a usage
 error. `out/` is ignored.
 
@@ -44,13 +53,15 @@ them changes every output.
 
 - Every port parameter is an invented assumption; the docs say so. The main ones live in `config.py` and
   `reference.py`; the rest are hard-coded in the other modules, and `docs/data_dictionary.md` (top) lists by module
-  the ones that shape the data (small noise terms, such as GPS jitter, are left out). A new one goes into that list. `hazmat_rules_illustrative` is not the JT/T 617 table.
+  the ones that shape the data (small noise terms, such as GPS jitter, are left out). A new one goes into that
+  list. `hazmat_rules_illustrative` is not the JT/T 617 table.
 - The same seed gives byte-identical files in any process (`test_output_does_not_depend_on_hash_seed`): output must
   not depend on set or dict iteration order.
 - Internal columns start with `x_` (pandas `itertuples` renames columns that start with `_`) and are dropped from
   the written tables. `build_dataset(...)["internal"]` exposes the visits and simulations to tests only.
 - A change that moves the default-run numbers updates the table in `README.md`, the figures in
-  `docs/data_dictionary.md`, and the one-line summary in the parent repo's event `NOTES.md` (Files table).
+  `docs/data_dictionary.md`, and, on the owner's Mac, the one-line summary in the parent repo's event `NOTES.md`
+  (Files table).
 - The tests added with the 2026-09-29 fixes were checked by breaking the code on purpose in scratch copies: each
   fails on its broken copy and passes on the clean one. First round (ledger, visit dependencies, the short-trip
   trajectory horizon, plate clash check, downsizing, hidden hazmat unit): the trajectory test was strengthened after

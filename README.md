@@ -7,9 +7,11 @@ copies of the business tables, and an answer key. Built for team 不系舟 (Leew
 data arrives late or incomplete.
 
 **All data is synthetic and every port parameter is an invented assumption.** Nothing here describes a real
-Transfar port. Label any number taken from it as simulated.
+Transfar port. Before quoting a number from it, read "Using the numbers" below.
 
 ## Run
+
+Needs [uv](https://docs.astral.sh/uv/); `uv sync` installs the locked packages (and Python 3.13 if it is missing).
 
 ```bash
 uv sync
@@ -20,8 +22,7 @@ uv run pytest
 Options: `--seed`, `--days` (1 to 365, default 14), `--start-date` (YYYY-MM-DD, default 2026-09-14), `--no-trajectories`,
 `--no-messy`. The same seed gives byte-identical files, whatever `PYTHONHASHSEED` is, with the versions locked in
 `uv.lock` under Python 3.13 (`.python-version`; numpy 2.5.3, pandas 3.0.6); other versions may change the numbers.
-A 14-day run takes a few
-seconds and under 0.2 GB of memory; output is about 6 MB.
+A 14-day run takes a few seconds and under 0.2 GB of memory; output is about 6 MB.
 
 Read the CSVs with `dtype=str` (e.g. `pd.read_csv(path, dtype=str, keep_default_na=False)`): otherwise pandas turns
 hazmat classes such as `3` into `3.0` and empty cells into NaN.
@@ -62,6 +63,15 @@ a claimed saving; the parameters were chosen so that these problems appear, so t
 says nothing about a real port. The late-departure share hardly depends on the docks: the pooled reference still
 gives 17.7%, and a check on 2026-09-29 found about 19% would leave late with no dock queue at all. Lateness here comes
 mostly from when trucks arrive to load and how long loading takes, so do not claim a dock-scheduling saving from it.
+
+## Using the numbers (team rule, 2026-09-29)
+
+- A number computed on this data appears in the pitch, the demo video or the README only as a comparison against
+  the simulated baseline (today's practice in this data), labelled 模拟数据 on the same slide or line.
+- The pooled 8 min figure is never a saving: it uses an invented 15 min penalty for another line's dock, and the
+  port parameters were chosen so that queues appear.
+- No number from this data is presented as a Transfar figure or a real port's figure.
+- `hazmat_rules_illustrative.csv` stays illustrative; a claim about hazardous-goods mixing needs the JT/T 617 text.
 
 ## Known simplifications
 
