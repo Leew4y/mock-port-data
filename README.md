@@ -42,6 +42,8 @@ For the rehearsal, hand out `messy/`, `clean/{lines,docks,vehicle_types,hazmat_r
 `data_dictionary.md` and `scenario_brief_zh.md`. Keep the other clean tables and `answer_key/` for scoring. The messy
 orders carry each order's delivery visit (送货作业编号) and baseline truck (干线车次), as real exports do, so today's
 dispatch can be rebuilt from them; the clean tables are withheld for the data-cleaning part, not to hide it.
+In the team's rehearsal Claude is the organizer: it generates the packet with an unannounced seed, hands out the
+files above at the start, and keeps the rest to score the team's plans and data check at the review.
 
 ## What the default seed produces (14 days; simulated, 模拟数据)
 
@@ -63,6 +65,35 @@ a claimed saving; the parameters were chosen so that these problems appear, so t
 says nothing about a real port. The late-departure share hardly depends on the docks: the pooled reference still
 gives 17.7%, and a check on 2026-09-29 found about 19% would leave late with no dock queue at all. Lateness here comes
 mostly from when trucks arrive to load and how long loading takes, so do not claim a dock-scheduling saving from it.
+
+## Scoring a plan
+
+`portsim.evaluate` scores a team's plan on a generated folder, and scores today's practice with the same code, so
+the two sets of numbers are comparable:
+
+```bash
+uv run python -m portsim.evaluate docks plan.csv --data out
+uv run python -m portsim.evaluate loads plan.csv --data out
+```
+
+- **docks**: one row per dock visit, with columns `event_id` (from `gate_events`), `dock_id` and `planned_start`
+  (written like the times in `gate_events`). Each dock serves its visits in order of planned start, each as soon as
+  the truck has reached the dock, its cargo is ready and the dock is free; a dock is never held idle for a later
+  start. Arrival and service times are the recorded ones. A truck at another line's dock takes the pooled
+  reference's extra 15 min (invented). Hazmat trucks use H docks, the others G docks. Today's practice in this form
+  is `gate_events[["event_id", "dock_id", "dock_start"]]` with `dock_start` renamed `planned_start`.
+- **loads**: one row per order, with columns `order_id`, `truck_id` (any label, unique within the date),
+  `vehicle_type`, and optionally `hold` (1 keeps the order back for inspection; it is not loaded that evening).
+  One destination per truck; weight and volume within the vehicle (its full volume; trucks above the 90% fill limit
+  are counted); declared hazmat orders only with declared hazmat orders. The output counts hidden hazmat held,
+  ordinary orders held, and trucks still carrying hidden hazmat.
+- A plan may cover some dates only, such as the one day of a 48-hour slice. Every visit or order of a date it
+  covers must be in it, and only those dates are scored.
+- `--data` must be a folder written by `python -m portsim`. The evaluator rebuilds the data from the config in
+  `answer_key/baseline_summary.json` and checks it against `clean/gate_events.csv`, so the parts a team cannot see
+  (which visit waits for which, the hidden hazmat) are scored as they really are in the data.
+- A dock plan made knowing every arrival in advance overstates what a dispatcher deciding in real time can reach;
+  say so beside any number from it. Every number follows the rule below.
 
 ## Using the numbers (team rule, 2026-09-29)
 
@@ -100,3 +131,4 @@ hazardous-goods mixing needs the JT/T 617 text.
 | `portsim/trajectories.py` | GPS pings with labelled anomalies |
 | `portsim/messy.py` | messy copies and the issue ledger |
 | `portsim/build.py`, `portsim/cli.py` | assembly and writing |
+| `portsim/evaluate.py` | scoring a dock or load plan against today's practice with the same code |
