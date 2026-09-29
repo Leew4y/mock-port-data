@@ -2,7 +2,20 @@
 
 All data is synthetic. Every number below that describes the port (dock counts, service rates, delays, shares) is an
 invented assumption chosen so that queues and half-empty trucks appear at a plausible scale; none was measured at
-a Transfar port. Change them in `portsim/config.py` and `portsim/reference.py`.
+a Transfar port. Most are in `portsim/config.py` and `portsim/reference.py`; the rest are hard-coded in the modules
+of `portsim/`:
+
+- `entities.py`: the limits that size a line's standard truck and its hazmat trucks, 6 outbound and 6 inbound fleet
+  trucks per line, the spread of line sizes (hazmat lines get 0.4 of a general line's orders), 600 shippers, order
+  weight (median 250 kg, hazmat 300 kg) and density spreads.
+- `dispatch.py`: the overflow truck sizes and the 3 m³ squeeze of a small leftover.
+- `operations.py`: 1 to 4 orders per shipper delivery van (1 + Poisson(0.8)); 6% of inbound linehaul trucks late by
+  a further 60 to 240 min; 10 min extra service at hazmat docks; the spread of service times; 5 to 15 min from dock to
+  gate; inbound linehaul trucks per day 0.7 to 1.3 times the outbound ones, filled Beta(6, 3); pickup vans of 8 to
+  14 m³ each, 80% of them 4.2 m where the load allows; at most 3 hired plates per line and truck size.
+- `trajectories.py`: 6% of trucks with an anomaly, 65 km/h ± 15%, at most 180 min of driving before the gate,
+  anomaly lengths (long stop 45 to 90 min, route deviation 30 to 60 min, signal gap 40 to 90 min).
+- `messy.py`: the share of cells changed by each kind of injected issue.
 
 ## The port being simulated
 
@@ -80,7 +93,9 @@ load_factor_weight, load_factor (the larger of the two), hazmat_classes, illustr
 
 Each line packs its own orders first-fit-decreasing into its standard trucks. A line with one truck that day runs
 its standard truck however empty. When more are needed, the last one is hired at the smallest size that fits the
-remainder, and at least 6.8m on routes over 600 km. Plates of hired trucks are separate from the line's own fleet.
+remainder, and at least 6.8m on routes over 600 km. Plates of hired trucks are separate from the line's own fleet,
+except on a saturated port (non-default settings), where a truck whose usual plate is still inside takes another
+free plate of the line with the same vehicle type, or a new one.
 
 ## clean/appointments.csv
 
@@ -118,13 +133,13 @@ longest is taken.
 GPS pings every 5 minutes over the last 3 hours before each inbound linehaul truck reaches the gate: event_id,
 plate, ts, lat, lon, speed_kmh. The truck moves on a straight line from its origin city at constant speed (toy
 geometry, not roads); a truck whose trip is shorter than 3 hours (Shanghai) has pings from its departure only.
-About 6% of trucks have one anomaly (long_stop, route_deviation, signal_gap), listed in
-`answer_key/trajectory_anomalies.csv`; every ping with speed 0 lies inside a labelled long_stop.
+Each truck has a 6% chance of one anomaly (long_stop, route_deviation, signal_gap; 6.8% of trucks in the default
+run), listed in `answer_key/trajectory_anomalies.csv`; every ping with speed 0 lies inside a labelled long_stop.
 
 ## clean/hazmat_rules_illustrative.csv
 
 Pairs that must not share a vehicle. **Illustrative only, not the JT/T 617.6 table, which was not read.** Replace
-with the standard's table before any claim about compliance.
+with the standard's table before any claim about compliance (the 2018 text as amended by amendment No. 1 of 2024-05-07).
 
 ## messy/
 

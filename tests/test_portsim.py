@@ -11,6 +11,7 @@ import pytest
 from portsim import Config, build_dataset, write_dataset
 from portsim import messy as mz
 from portsim.dispatch import conflicts, first_fit_decreasing
+from portsim.entities import OUT_FLEET
 from portsim import reference as ref
 
 
@@ -62,6 +63,44 @@ def test_every_order_fits_its_lines_standard_truck(ds):
 def test_days_out_of_range_is_refused(days):
     with pytest.raises(ValueError):
         Config(days=days)
+
+
+def test_cli_refuses_bad_days_with_a_usage_error(capsys, tmp_path):
+    from portsim.cli import main
+
+    with pytest.raises(SystemExit) as e:
+        main(["--days", "0", "--out", str(tmp_path / "unused")])
+    assert e.value.code == 2
+    assert "days must be between 1 and 365" in capsys.readouterr().err
+
+
+def test_written_tables_have_no_internal_columns(ds):
+    for part in ("clean", "messy", "answer_key"):
+        for name, df in ds[part].items():
+            assert not [c for c in df.columns if str(c).startswith("x_")], (part, name)
+
+
+def test_hazmat_lines_are_sized_by_expected_weight(ds):
+    from portsim.entities import HAZMAT_MEAN_ORDER_KG, HAZMAT_VEHICLE_LIMITS
+
+    lines = ds["internal"]["lines"]
+    for line in lines[lines["hazmat_qualified"]].itertuples():
+        kg = line.x_lam * HAZMAT_MEAN_ORDER_KG
+        assert line.standard_vehicle == next((vt for vt, limit in HAZMAT_VEHICLE_LIMITS if kg <= limit), "13m")
+
+
+def test_free_dock_idle_longest_is_taken():
+    """E1 takes D01 until 25 and E2 takes D02 until 10; at 30 both are free and would finish E3 at the same time,
+    so E3 takes D02, idle since 10."""
+    from portsim.docksim import simulate
+
+    docks = pd.DataFrame({"dock_id": ["D01", "D02"], "dock_type": ["general"] * 2, "owner": ["L01"] * 2})
+    ops = pd.DataFrame({
+        "op_id": ["E1", "E2", "E3"], "gate_in": [0, 0, 25], "after": ["", "", ""], "hazmat": [False] * 3,
+        "line_id": ["L01"] * 3, "service_min": [20, 5, 5], "exit_min": [5] * 3,
+    })
+    sim = simulate(Config(), ops, docks, "owned").set_index("op_id")
+    assert sim["dock_id"].to_dict() == {"E1": "D01", "E2": "D02", "E3": "D02"}
 
 
 def test_other_seed_differs(tmp_path):
@@ -166,6 +205,32 @@ def test_packing_follows_the_stated_rules(ds):
     assert (t["load_factor_volume"] <= 1.0 + 1e-9).all()
 
 
+def test_small_leftover_rides_with_the_other_trucks_when_it_fits(ds):
+    """A hired truck with under 3 m3 exists only if its orders, tried one by one in packing order (largest first),
+    would not fit into the line's other trucks that day at their full volume and weight."""
+    t = ds["internal"]["trucks"]
+    o = ds["clean"]["orders"]
+    lines = ds["clean"]["lines"].set_index("line_id")
+    by_truck = {tid: g for tid, g in o.groupby("baseline_truck_id")}
+    for (date, lid), g in t.groupby(["date", "line_id"]):
+        g = g.sort_values("x_truck_no")
+        last = g.iloc[-1]
+        if len(g) < 2 or last["volume_m3"] >= 3.0:
+            continue
+        _, cap_kg, vol = ref.VEHICLE_TYPES[lines.at[lid, "standard_vehicle"]]
+        loads = [[by_truck[tid]["weight_kg"].sum(), by_truck[tid]["volume_m3"].sum()] for tid in g["truck_id"].iloc[:-1]]
+        fits_all = True
+        left = by_truck[last["truck_id"]].sort_values(["volume_m3", "order_id"], ascending=[False, True])
+        for r in left.itertuples():
+            b = next((b for b in loads if b[0] + r.weight_kg <= cap_kg and b[1] + r.volume_m3 <= vol), None)
+            if b is None:
+                fits_all = False
+                break
+            b[0] += r.weight_kg
+            b[1] += r.volume_m3
+        assert not fits_all, last["truck_id"]
+
+
 def test_undeclared_hazmat_is_hidden_in_general_lines(ds):
     o, lines = ds["clean"]["orders"], ds["clean"]["lines"]
     key = ds["answer_key"]["undeclared_hazmat"]
@@ -244,13 +309,52 @@ def test_booked_slot_holds_the_planned_time(ds):
     assert (b["slot_end"] - b["slot_start"] == 30).all()
 
 
-def test_each_plate_is_one_vehicle_in_one_place(ds):
-    c = ds["clean"]
+def _assert_one_vehicle_in_one_place(c):
     both = pd.concat([c["gate_events"][["plate", "vehicle_type"]], c["appointments"][["plate", "vehicle_type"]]])
     assert (both.groupby("plate")["vehicle_type"].nunique() == 1).all()
     g = c["gate_events"].assign(i=lambda d: pd.to_datetime(d["gate_in"]), o=lambda d: pd.to_datetime(d["gate_out"]))
-    for _, d in g.sort_values("i").groupby("plate"):
-        assert (d["i"].to_numpy()[1:] >= d["o"].to_numpy()[:-1]).all()
+    for plate, d in g.sort_values("i").groupby("plate"):
+        assert (d["i"].to_numpy()[1:] >= d["o"].to_numpy()[:-1]).all(), plate
+
+
+def test_each_plate_is_one_vehicle_in_one_place(ds):
+    _assert_one_vehicle_in_one_place(ds["clean"])
+
+
+def test_plates_stay_one_vehicle_in_one_place_when_the_port_is_saturated():
+    """With 28 docks for 28 lines trucks stay up to two days, so a line's truck can still be inside when the next
+    day's truck with the same plate arrives (7 clashes before linehaul plates were checked after the simulation)."""
+    _assert_one_vehicle_in_one_place(build_dataset(Config(n_general_docks=28, trajectories=False, messy=False))["clean"])
+
+
+def test_trucks_of_one_line_on_one_day_are_different_vehicles(monkeypatch):
+    """Checked as the visits are made, with the post-simulation plate fix switched off so it cannot mend a clash,
+    and with each line's standard truck sized for 0.5 m3 orders, so that lines send several own trucks a day (by
+    default at most one)."""
+    import portsim.build
+
+    monkeypatch.setattr(portsim.build, "free_busy_fleet_plates", lambda ops, *args: ops)
+    i = build_dataset(Config(mean_order_volume_m3=0.5, trajectories=False, messy=False))["internal"]
+    own = i["trucks"][~i["trucks"]["x_hired"]]
+    assert own["x_truck_no"].max() > 1  # the case under test occurs
+    ops, fleet = i["ops"], i["lines"].set_index("line_id")["x_fleet"]
+    lh = ops[ops["op_type"].isin(["linehaul_out", "linehaul_in"])]
+    assert not lh.duplicated(["date", "line_id", "op_type", "plate"]).any()
+    out = ops[ops["ref_id"].isin(own["truck_id"])]
+    assert all(p in fleet[line][:OUT_FLEET] for line, p in zip(out["line_id"], out["plate"]))
+
+
+def test_linehaul_trucks_carry_their_lines_fleet_plates_on_the_default_port(ds):
+    """The post-simulation plate fix is for a saturated port only: on the default port it draws nothing, so every
+    linehaul truck that is not hired carries one of its line's own plates (outbound and inbound fleets apart)."""
+    i = ds["internal"]
+    fleet = i["lines"].set_index("line_id")["x_fleet"]
+    hired = set(i["trucks"].loc[i["trucks"]["x_hired"], "truck_id"])
+    ops = i["ops"]
+    out = ops[(ops["op_type"] == "linehaul_out") & ~ops["ref_id"].isin(hired)]
+    inbound = ops[ops["op_type"] == "linehaul_in"]
+    assert all(p in fleet[line][:OUT_FLEET] for line, p in zip(out["line_id"], out["plate"]))
+    assert all(p in fleet[line][OUT_FLEET:] for line, p in zip(inbound["line_id"], inbound["plate"]))
 
 
 def test_hidden_hazmat_looks_like_its_declared_category(ds):
@@ -259,6 +363,25 @@ def test_hidden_hazmat_looks_like_its_declared_category(ds):
     hidden = o[o["order_id"].isin(key["order_id"])]
     unit = hidden["description"].str.extract(r"\d+(\D+)$")[0]
     assert (unit == hidden["category"].map(lambda c: ref.CATEGORIES[c][3])).all()
+
+
+def test_hidden_hazmat_weight_and_density_match_the_declared_category():
+    """Only the item name may give hidden hazardous goods away: their weight and density are drawn like any order of
+    the declared category. A build with many hidden orders keeps the medians stable."""
+    d = build_dataset(Config(p_undeclared_hazmat=0.05, trajectories=False, messy=False))
+    o = d["clean"]["orders"]
+    o = o[o["hazmat_class"] == ""].assign(density=lambda x: x["weight_kg"] / x["volume_m3"])
+    hidden = o["order_id"].isin(d["answer_key"]["undeclared_hazmat"]["order_id"])
+    checked = 0
+    for cat, g in o.groupby("category"):
+        h, n = g[hidden.loc[g.index]], g[~hidden.loc[g.index]]
+        if len(h) < 30:
+            continue
+        checked += 1
+        for col in ("weight_kg", "density"):
+            ratio = h[col].median() / n[col].median()
+            assert 0.8 < ratio < 1.25, (cat, col, round(ratio, 2))
+    assert checked >= 1
 
 
 def test_trajectories_agree_with_labels(ds):

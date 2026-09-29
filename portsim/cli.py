@@ -20,8 +20,11 @@ def main(argv=None) -> None:
     p.add_argument("--no-trajectories", action="store_true")
     p.add_argument("--no-messy", action="store_true")
     a = p.parse_args(argv)
-    cfg = Config(seed=a.seed, days=a.days, start_date=a.start_date,
-                 trajectories=not a.no_trajectories, messy=not a.no_messy)
+    try:
+        cfg = Config(seed=a.seed, days=a.days, start_date=a.start_date,
+                     trajectories=not a.no_trajectories, messy=not a.no_messy)
+    except ValueError as e:
+        p.error(str(e))
     ds = build_dataset(cfg)
     write_dataset(ds, Path(a.out))
     s = ds["summary"]

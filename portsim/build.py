@@ -16,7 +16,7 @@ from .dispatch import baseline_dispatch, conflicts
 from .docksim import kpis, simulate
 from .entities import PlateBook, make_docks, make_lines, make_orders
 from .messy import make_messy
-from .operations import assign_local_plates, make_operations
+from .operations import assign_local_plates, free_busy_fleet_plates, make_operations
 from .trajectories import make_trajectories
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
@@ -42,6 +42,7 @@ def build_dataset(cfg: Config) -> dict:
     ops, dropoff = make_operations(cfg, lines, orders, trucks, order_truck, book, r_ops)
     sim = simulate(cfg, ops, docks, "owned")
     pooled = simulate(cfg, ops, docks, "pooled")
+    ops = free_busy_fleet_plates(ops, sim, lines, book, r_plates)  # draws only when a plate is busy
     ops = assign_local_plates(cfg, ops, sim, book, r_plates)
 
     # clean tables
@@ -163,6 +164,5 @@ def write_dataset(ds: dict, out: Path) -> None:
     (out / "answer_key" / "baseline_summary.json").write_text(
         json.dumps(ds["summary"], ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    for doc in ("data_dictionary.md", "scenario_brief_zh.md"):
-        if (DOCS / doc).exists():
-            shutil.copy(DOCS / doc, out / doc)
+    for doc in ("data_dictionary.md", "scenario_brief_zh.md"):  # a missing doc is an error, not a silent skip
+        shutil.copy(DOCS / doc, out / doc)

@@ -18,7 +18,9 @@ uv run pytest
 ```
 
 Options: `--seed`, `--days` (1 to 365, default 14), `--start-date` (default 2026-09-14), `--no-trajectories`,
-`--no-messy`. The same seed gives byte-identical files, whatever `PYTHONHASHSEED` is. A 14-day run takes a few
+`--no-messy`. The same seed gives byte-identical files, whatever `PYTHONHASHSEED` is, with the versions locked in
+`uv.lock` under Python 3.13 (`.python-version`; numpy 2.5.3, pandas 3.0.6); other versions may change the numbers.
+A 14-day run takes a few
 seconds and under 0.2 GB of memory; output is about 6 MB.
 
 Read the CSVs with `dtype=str` (e.g. `pd.read_csv(path, dtype=str, keep_default_na=False)`): otherwise pandas turns
@@ -40,7 +42,7 @@ For the rehearsal, hand out `messy/`, `clean/{lines,docks,vehicle_types,hazmat_r
 orders carry each order's delivery visit (送货作业编号) and baseline truck (干线车次), as real exports do, so today's
 dispatch can be rebuilt from them; the clean tables are withheld for the data-cleaning part, not to hide it.
 
-## What the default seed produces (14 days)
+## What the default seed produces (14 days; simulated, 模拟数据)
 
 From `answer_key/baseline_summary.json`:
 
@@ -54,26 +56,31 @@ From `answer_key/baseline_summary.json`:
 | linehaul trucks, lines load only their own orders (today) | 34 a day, mean load factor 0.58, 53% under 0.6 |
 | trucks carrying hidden hazardous goods | 34 (36 orders) |
 
-So both skeletons of the team's thesis have room to show a saving: pooling docks at port level (skeleton A) and
-pooling orders across lines to the same city (skeleton B).
+The simulated baseline leaves both skeletons of the team's thesis something to improve on: own-dock queues (skeleton A)
+and half-empty trucks to the same city (skeleton B). The pooled figure is a naive reference, not a solution and not
+a claimed saving; the parameters were chosen so that these problems appear, so the size of any saving on this data
+says nothing about a real port. The late-departure share hardly depends on the docks: the pooled reference still
+gives 17.7%, and a check on 2026-09-29 found about 19% would leave late with no dock queue at all. Lateness here comes
+mostly from when trucks arrive to load and how long loading takes, so do not claim a dock-scheduling saving from it.
 
 ## Known simplifications
 
 - One port, straight-line truck movements at constant speed, no road network, no slowdown near the port.
-- Every order leaves the same evening, and loading starts only after every order on the truck has been unloaded;
-  no carry-over. A line with one truck that day runs its own standard truck however empty; only an extra truck is
-  hired, at the smallest size that fits (at least 6.8m beyond 600 km).
+- Every order is loaded the same evening (15 of the 480 linehaul trucks in the default run leave after midnight),
+  and loading starts only after every order on the truck has been unloaded; no carry-over. A line with one
+  truck that day runs its own standard truck however empty; only an extra truck is hired, at the smallest size that
+  fits (at least 6.8m beyond 600 km).
 - Inbound cargo has no order records; each pickup van loads from one inbound truck, after it is unloaded.
 - Dock service time depends only on cargo volume and operation type; no crew or forklift limits.
 - Appointments are not checked against dock capacity; about 30% of booked trucks arrive after their slot ends.
-- `hazmat_rules_illustrative.csv` is not the JT/T 617.6 mixing table (not read); replace it before any claim.
+- `hazmat_rules_illustrative.csv` is not the JT/T 617.6 mixing table (not read; check the 2018 text together with its 2024-05-07 amendment No. 1); replace it before any claim.
 - Real hazardous-goods transport needs qualified vehicles and operators; here hazmat lines simply use H docks.
 
 ## Code
 
 | File | Role |
 |---|---|
-| `portsim/config.py`, `portsim/reference.py` | all assumptions |
+| `portsim/config.py`, `portsim/reference.py` | the main assumptions (the rest are hard-coded in the other modules; `docs/data_dictionary.md` lists them) |
 | `portsim/entities.py` | lines, docks, plates, orders (incl. hidden hazmat) |
 | `portsim/dispatch.py` | today's per-line linehaul packing |
 | `portsim/operations.py` | truck visits, appointments, arrival delays, service times |

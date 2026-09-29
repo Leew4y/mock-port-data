@@ -11,7 +11,7 @@ pickup_out    local vans collect the unloaded goods for delivery (morning); each
 
 A visit's `after` lists the visits it waits for (op ids joined by ";"); docksim.py enforces it.
 Local van plates are left empty here and issued after the dock simulation (assign_local_plates), so that one van
-is never at the port twice at the same time.
+is never at the port twice at the same time; linehaul plates are checked after it too (free_busy_fleet_plates).
 """
 
 from __future__ import annotations
@@ -172,6 +172,33 @@ def make_operations(cfg, lines, orders, trucks, order_truck, book: PlateBook, rn
                     )
 
     return pd.DataFrame(ops.rows), dropoff
+
+
+def free_busy_fleet_plates(ops: pd.DataFrame, sim: pd.DataFrame, lines: pd.DataFrame, book: PlateBook, rng) -> pd.DataFrame:
+    """Linehaul trucks get their plates before the dock simulation (by truck number, the same plate every day). When
+    the port is saturated a truck can still be inside when the next day's truck with that plate arrives; such a visit
+    takes a free plate the same line uses for the same operation and vehicle type, or a newly issued one. With the
+    default settings no visit is affected."""
+    ops = ops.copy()
+    lh = ops["op_type"].isin(["linehaul_out", "linehaul_in"])
+    times = sim.set_index("op_id")[["gate_in", "gate_out"]].rename(columns={"gate_in": "g_in", "gate_out": "g_out"})
+    shown = ops[lh & ops["gate_in"].notna()].join(times, on="op_id").sort_values(["g_in", "op_id"])
+    pools = {k: list(g.unique()) for k, g in ops[lh].groupby(["line_id", "op_type", "vehicle_type"])["plate"]}
+    prefix = lines.set_index("line_id")["x_prefix"]
+    busy: dict[str, int] = {}  # plate -> minute it leaves the port
+    for r in shown.itertuples():
+        plate = r.plate
+        if busy.get(plate, -1) > r.g_in:
+            pool = pools[(r.line_id, r.op_type, r.vehicle_type)]
+            free = [p for p in pool if busy.get(p, -1) <= r.g_in]
+            if free:
+                plate = free[0]
+            else:
+                plate = book.new(rng, prefix[r.line_id])
+                pool.append(plate)
+            ops.at[r.Index, "plate"] = plate
+        busy[plate] = int(r.g_out)
+    return ops
 
 
 def assign_local_plates(cfg: Config, ops: pd.DataFrame, sim: pd.DataFrame, book: PlateBook, rng) -> pd.DataFrame:
