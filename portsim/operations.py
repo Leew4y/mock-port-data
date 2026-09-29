@@ -3,9 +3,15 @@
 Times are integer minutes since start_date 00:00 until build.py converts them.
 
 delivery_in   shipper vans drop LTL orders at the line's dock (daytime)
-linehaul_out  the line's trucks load the day's orders and leave (evening)
+linehaul_out  the line's trucks load the day's orders and leave (evening); loading waits for every order on the
+              truck to be unloaded from its delivery van
 linehaul_in   trucks from the destination side arrive and unload (early morning)
-pickup_out    local vans collect the unloaded goods for delivery (morning)
+pickup_out    local vans collect the unloaded goods for delivery (morning); each van loads from one inbound truck
+              and waits for it to be unloaded
+
+A visit's `after` lists the visits it waits for (op ids joined by ";"); docksim.py enforces it.
+Local van plates are left empty here and issued after the dock simulation (assign_local_plates), so that one van
+is never at the port twice at the same time.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import pandas as pd
 
 from . import reference as ref
 from .config import Config
+from .entities import IN_FLEET, OUT_FLEET, PlateBook
 
 
 def _hhmm(s: str) -> int:
@@ -40,7 +47,7 @@ class _Ops:
     def __init__(self, cfg: Config, rng: np.random.Generator):
         self.cfg, self.rng, self.rows = cfg, rng, []
 
-    def add(self, *, date, line, op_type, planned, vehicle, plate, volume, n_orders, ref_id=""):
+    def add(self, *, date, line, op_type, planned, vehicle, plate, volume, n_orders, ref_id="", after=(), due=None):
         rng, cfg = self.rng, self.cfg
         op_id = f"E{len(self.rows) + 1:06d}"
         has_appt = bool(rng.random() < ref.APPOINTMENT_SHARE[op_type])
@@ -79,12 +86,14 @@ class _Ops:
                 "gate_in": gate_in,
                 "service_min": max(5, int(round(service))),
                 "exit_min": exit_min,
+                "after": ";".join(after),
+                "due": due,
             }
         )
         return op_id
 
 
-def make_operations(cfg, lines, orders, trucks, local_plates, rng):
+def make_operations(cfg, lines, orders, trucks, order_truck, book: PlateBook, rng):
     """Return (ops, dropoff_op Series indexed like orders)."""
     ops = _Ops(cfg, rng)
     dropoff = pd.Series("", index=orders.index, dtype=object)
@@ -92,12 +101,14 @@ def make_operations(cfg, lines, orders, trucks, local_plates, rng):
     trucks_by = {k: g for k, g in trucks.groupby(["date", "line_id"], sort=True)}
     fill = cfg.volume_fill_limit
     days = pd.date_range(cfg.start_date, periods=cfg.days, freq="D")
+    hired: dict[tuple, list[str]] = {}  # (line, vehicle type) -> plates of trucks hired for overflow
 
     for di, day in enumerate(days):
         date = day.strftime("%Y-%m-%d")
         base = di * 1440
         for line in lines.itertuples(index=False):
             key = (date, line.line_id)
+            out_fleet, in_fleet = line.x_fleet[:OUT_FLEET], line.x_fleet[OUT_FLEET:OUT_FLEET + IN_FLEET]
 
             g = orders_by.get(key)
             if g is not None:
@@ -111,10 +122,9 @@ def make_operations(cfg, lines, orders, trucks, local_plates, rng):
                     i += size
                     w, v = _sums(orders, idx)
                     vt = next(t for t in ref.SMALL_VEHICLES if _fits(t, w, v, fill))
-                    plate = local_plates[int(rng.integers(len(local_plates)))]
                     op_id = ops.add(
                         date=date, line=line, op_type="delivery_in", planned=base + _profile_minute(rng, "delivery_in"),
-                        vehicle=vt, plate=plate, volume=v, n_orders=len(idx),
+                        vehicle=vt, plate="", volume=v, n_orders=len(idx),
                     )
                     dropoff.loc[idx] = op_id
 
@@ -123,36 +133,71 @@ def make_operations(cfg, lines, orders, trucks, local_plates, rng):
             n_out = 0 if tg is None else len(tg)
             if tg is not None:
                 for t in tg.itertuples(index=False):
-                    planned = base + dep - ref.LOADING_LEAD_MIN + int(rng.integers(-20, 21))
+                    if t.x_hired:
+                        pool = hired.setdefault((line.line_id, t.vehicle_type), [])
+                        if len(pool) < 3:
+                            pool.append(book.new(rng, line.x_prefix))
+                        plate = pool[di % len(pool)]
+                    else:
+                        plate = out_fleet[(t.x_truck_no - 1) % len(out_fleet)]
+                    cargo = sorted(set(dropoff.loc[order_truck.index[order_truck == t.truck_id]]))
                     ops.add(
-                        date=date, line=line, op_type="linehaul_out", planned=planned, vehicle=t.vehicle_type,
-                        plate=line.x_fleet[(t.x_truck_no - 1) % len(line.x_fleet)], volume=t.volume_m3,
-                        n_orders=t.n_orders, ref_id=t.truck_id,
+                        date=date, line=line, op_type="linehaul_out",
+                        planned=base + dep - ref.LOADING_LEAD_MIN + int(rng.integers(-20, 21)),
+                        vehicle=t.vehicle_type, plate=plate, volume=t.volume_m3, n_orders=t.n_orders,
+                        ref_id=t.truck_id, after=cargo, due=base + dep,
                     )
 
             n_in = max(1, int(round(max(1, n_out) * rng.uniform(0.7, 1.3))))
             vol_std = ref.VEHICLE_TYPES[line.standard_vehicle][2]
-            total_in = 0.0
-            for j in range(n_in):
-                v = vol_std * fill * rng.beta(6, 3)
-                total_in += v
-                ops.add(
-                    date=date, line=line, op_type="linehaul_in", planned=base + _profile_minute(rng, "linehaul_in"),
-                    vehicle=line.standard_vehicle, plate=line.x_fleet[(j + 4) % len(line.x_fleet)], volume=v, n_orders=0,
-                )
-
             per_van_max = ref.VEHICLE_TYPES["6.8m"][2] * fill
-            n_vans = max(1, int(round(total_in / rng.uniform(8, 14))), math.ceil(total_in / per_van_max))
-            v = total_in / n_vans
-            for _ in range(n_vans):
-                small_ok = v <= ref.VEHICLE_TYPES["4.2m"][2] * fill
-                vt = "4.2m" if (small_ok and rng.random() < 0.8) else "6.8m"
-                ops.add(
-                    date=date, line=line, op_type="pickup_out", planned=base + _profile_minute(rng, "pickup_out"),
-                    vehicle=vt, plate=local_plates[int(rng.integers(len(local_plates)))], volume=v, n_orders=0,
+            for j in range(n_in):
+                v_in = vol_std * fill * rng.beta(6, 3)
+                planned_in = base + _profile_minute(rng, "linehaul_in")
+                in_id = ops.add(
+                    date=date, line=line, op_type="linehaul_in", planned=planned_in,
+                    vehicle=line.standard_vehicle, plate=in_fleet[j % len(in_fleet)], volume=v_in, n_orders=0,
                 )
+                # the goods of one inbound truck leave in local vans booked for after its expected unloading
+                n_vans = max(1, int(round(v_in / rng.uniform(8, 14))), math.ceil(v_in / per_van_max))
+                v = v_in / n_vans
+                unloaded = planned_in + cfg.approach_min + ref.SERVICE_SETUP_MIN + ref.SERVICE_RATE_MIN_PER_M3["linehaul_in"] * v_in
+                for _ in range(n_vans):
+                    small_ok = v <= ref.VEHICLE_TYPES["4.2m"][2] * fill
+                    vt = "4.2m" if (small_ok and rng.random() < 0.8) else "6.8m"
+                    planned = max(base + _profile_minute(rng, "pickup_out"), int(unloaded) + int(rng.integers(0, 61)))
+                    ops.add(
+                        date=date, line=line, op_type="pickup_out", planned=planned,
+                        vehicle=vt, plate="", volume=v, n_orders=0, after=(in_id,),
+                    )
 
     return pd.DataFrame(ops.rows), dropoff
+
+
+def assign_local_plates(cfg: Config, ops: pd.DataFrame, sim: pd.DataFrame, book: PlateBook, rng) -> pd.DataFrame:
+    """Issue local van plates after the dock simulation: a van is reused only once it has left the port and
+    local_van_turnaround_min has passed, and each plate keeps one vehicle type."""
+    ops = ops.copy()
+    local = ops["op_type"].isin(["delivery_in", "pickup_out"])
+    times = sim.set_index("op_id")[["gate_in", "gate_out"]].rename(columns={"gate_in": "g_in", "gate_out": "g_out"})
+    shown = ops[local & ops["gate_in"].notna()].join(times, on="op_id").sort_values(["g_in", "op_id"])
+    pools: dict[str, list[list]] = {}  # vehicle type -> [plate, free from minute]
+    for r in shown.itertuples():
+        pool = pools.setdefault(r.vehicle_type, [])
+        free = [i for i, (_, t) in enumerate(pool) if t <= r.g_in]
+        if free and rng.random() < 0.9:  # mostly vans already seen; now and then a new one
+            i = free[int(rng.integers(len(free)))]
+        else:
+            pool.append([book.new(rng, ref.LOCAL_PLATE_PREFIX), 0])
+            i = len(pool) - 1
+        pool[i][1] = int(r.g_out) + cfg.local_van_turnaround_min
+        ops.at[r.Index, "plate"] = pool[i][0]
+    for idx in ops.index[local & ops["gate_in"].isna()]:  # no-shows: a van that exists, it just never came
+        pool = pools.setdefault(ops.at[idx, "vehicle_type"], [])
+        if not pool:
+            pool.append([book.new(rng, ref.LOCAL_PLATE_PREFIX), 0])
+        ops.at[idx, "plate"] = pool[int(rng.integers(len(pool)))][0]
+    return ops
 
 
 def _sums(orders: pd.DataFrame, idx) -> tuple[float, float]:

@@ -1,7 +1,8 @@
 """Messy copies of three clean tables, the way exported business data often arrives.
 
-Every injected problem is listed in answer_key/messy_injected_issues.csv (table, key, column, issue), so a
-data health-check tool can be scored. Headers and category values are in Chinese; orders are GB18030-encoded.
+Every changed cell is listed in answer_key/messy_injected_issues.csv (table, key, column, issue), so a data
+health-check tool can be scored; a swapped dock_start/dock_end pair is two rows. A duplicated row is an exact copy
+of the row as it stands after the other injections, and is listed once with an empty column. Headers and category values are in Chinese; orders are GB18030-encoded.
 """
 
 from __future__ import annotations
@@ -94,9 +95,11 @@ def make_messy(tables: dict, rng: np.random.Generator):
             for i in inj.pick("dock_end", 0.003, nonempty):
                 df.at[i, "dock_start"], df.at[i, "dock_end"] = df.at[i, "dock_end"], df.at[i, "dock_start"]
                 inj.used.setdefault("dock_start", set()).add(i)
+                inj.log(i, "dock_start", "end_before_start")
                 inj.log(i, "dock_end", "end_before_start")
             for i in inj.pick("gate_in", 0.002):
-                df.at[i, "gate_in"] = "2025" + df.at[i, "gate_in"][4:]
+                ts = df.at[i, "gate_in"]
+                df.at[i, "gate_in"] = str(int(ts[:4]) - 1) + ts[4:]
                 inj.log(i, "gate_in", "wrong_year")
         if name == "orders":
             for i in inj.pick("volume_m3", 0.002):
@@ -126,7 +129,7 @@ def make_messy(tables: dict, rng: np.random.Generator):
             for n, i in enumerate(unit_idx):
                 kg = float(df.at[i, "weight_kg"])
                 style = n % 3
-                df.at[i, "weight_kg"] = (f"{kg / 1000:.3f}t", f"{kg:g}kg", f"{kg:g}公斤")[style]
+                df.at[i, "weight_kg"] = (f"{kg / 1000:.4f}t", f"{kg:g}kg", f"{kg:g}公斤")[style]
                 inj.log(i, "weight_kg", "weight_unit")
 
         if "op_type" in df.columns:

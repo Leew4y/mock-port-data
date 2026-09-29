@@ -54,14 +54,15 @@ HAZMAT_CLASSES = {
     "9": (0.15, ["锂离子电池", "锂电池组"], "箱"),
 }
 
-# Hazardous goods hidden in general-line orders: (item, likely class, declared category, unit)
+# Hazardous goods hidden in general-line orders: (item, likely class, declared category). Weight, density and
+# unit are drawn like any order of the declared category, so only the item name gives them away.
 UNDECLARED_ITEMS = [
-    ("油漆", "3", "日用百货", "桶"),
-    ("稀释剂", "3", "五金工具", "桶"),
-    ("酒精消毒液", "3", "日用百货", "箱"),
-    ("锂电池", "9", "电子电器", "箱"),
-    ("打火机", "2.1", "日用百货", "箱"),
-    ("农药", "6.1", "日用百货", "瓶"),
+    ("油漆", "3", "日用百货"),
+    ("稀释剂", "3", "五金工具"),
+    ("酒精消毒液", "3", "日用百货"),
+    ("锂电池", "9", "电子电器"),
+    ("打火机", "2.1", "日用百货"),
+    ("农药", "6.1", "日用百货"),
 ]
 
 # ILLUSTRATIVE mixing rules, NOT the JT/T 617.6 table (which was not read). Replace before any real claim.

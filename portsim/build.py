@@ -14,9 +14,9 @@ from . import reference as ref
 from .config import Config
 from .dispatch import baseline_dispatch, conflicts
 from .docksim import kpis, simulate
-from .entities import make_docks, make_lines, make_local_plates, make_orders
+from .entities import PlateBook, make_docks, make_lines, make_orders
 from .messy import make_messy
-from .operations import make_operations
+from .operations import assign_local_plates, make_operations
 from .trajectories import make_trajectories
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
@@ -29,20 +29,23 @@ def _times(cfg: Config, minutes: pd.Series) -> pd.Series:
 
 
 def build_dataset(cfg: Config) -> dict:
-    """Return {'clean': {...}, 'messy': {...}, 'answer_key': {...}, 'summary': {...}}."""
-    r_static, r_orders, r_ops, r_traj, r_messy = [np.random.default_rng(s) for s in np.random.SeedSequence(cfg.seed).spawn(5)]
+    """Return {'clean', 'messy', 'answer_key', 'summary', 'internal'}; 'internal' (visits, simulations) is not
+    written and exists for tests."""
+    streams = np.random.SeedSequence(cfg.seed).spawn(6)
+    r_static, r_orders, r_ops, r_traj, r_messy, r_plates = [np.random.default_rng(s) for s in streams]
 
-    lines = make_lines(cfg, r_static)
+    book = PlateBook()
+    lines = make_lines(cfg, r_static, book)
     docks = make_docks(cfg, lines)
-    local_plates = make_local_plates(r_static)
     orders, undeclared = make_orders(cfg, lines, r_orders)
     trucks, order_truck = baseline_dispatch(cfg, lines, orders)
-    ops, dropoff = make_operations(cfg, lines, orders, trucks, local_plates, r_ops)
+    ops, dropoff = make_operations(cfg, lines, orders, trucks, order_truck, book, r_ops)
     sim = simulate(cfg, ops, docks, "owned")
     pooled = simulate(cfg, ops, docks, "pooled")
+    ops = assign_local_plates(cfg, ops, sim, book, r_plates)
 
     # clean tables
-    lines_out = lines.drop(columns=["x_lam", "x_fleet"]).copy()
+    lines_out = lines.drop(columns=[c for c in lines.columns if c.startswith("x_")]).copy()
     lines_out["docks_owned"] = lines_out["line_id"].map(docks["owner"].value_counts()).fillna(0).astype(int)
     vehicle_types = pd.DataFrame(
         [(k, *v) for k, v in ref.VEHICLE_TYPES.items()], columns=["vehicle_type", "length_m", "max_load_kg", "volume_m3"]
@@ -89,7 +92,7 @@ def build_dataset(cfg: Config) -> dict:
         "docks": docks,
         "vehicle_types": vehicle_types,
         "orders": orders_out,
-        "baseline_dispatch": trucks.drop(columns=["x_truck_no"]),
+        "baseline_dispatch": trucks.drop(columns=[c for c in trucks.columns if c.startswith("x_")]),
         "appointments": appointments,
         "gate_events": gate_events,
         "hazmat_rules_illustrative": rules,
@@ -142,7 +145,8 @@ def build_dataset(cfg: Config) -> dict:
             "of_which_illustrative_conflict_with_food": int(food_mix),
         },
     }
-    return {"clean": clean, "messy": messy, "answer_key": answer, "summary": summary}
+    internal = {"lines": lines, "ops": ops, "sim": sim, "pooled": pooled, "trucks": trucks}
+    return {"clean": clean, "messy": messy, "answer_key": answer, "summary": summary, "internal": internal}
 
 
 def write_dataset(ds: dict, out: Path) -> None:

@@ -1,5 +1,6 @@
-"""Baseline linehaul dispatch: each line loads only its own orders into its own standard trucks; the last truck
-of the day is the smallest size that fits what is left.
+"""Baseline linehaul dispatch: each line loads only its own orders into its own standard trucks. When one truck is
+not enough, the extra truck is hired at the smallest size that fits what is left (at least 6.8m on long routes).
+A line with a single truck that day still runs its own standard truck, however empty.
 
 This is the "today" practice the rehearsal team is meant to beat (skeleton B pools lines to the same city).
 """
@@ -76,9 +77,10 @@ def baseline_dispatch(cfg: Config, lines: pd.DataFrame, orders: pd.DataFrame):
         for k, rows in enumerate(bins, start=1):
             sub = orders.loc[rows]
             vt_k, cap_kg_k, vol_k = vt, cap_kg, vol
-            if k == len(bins):  # the overflow truck is hired at the smallest size that fits
+            if k == len(bins) > 1:  # the overflow truck is hired at the smallest size that fits
                 w_, v_ = float(sub["weight_kg"].sum()), float(sub["volume_m3"].sum())
-                for cand in OVERFLOW_SIZES[: OVERFLOW_SIZES.index(vt) + 1]:
+                first = 0 if info["distance_km"] <= cfg.min_overflow_km_for_small_truck else 1
+                for cand in OVERFLOW_SIZES[first : OVERFLOW_SIZES.index(vt) + 1]:
                     _, ck, cv = ref.VEHICLE_TYPES[cand]
                     if w_ <= ck and v_ <= cv * cfg.volume_fill_limit:
                         vt_k, cap_kg_k, vol_k = cand, ck, cv
@@ -106,6 +108,7 @@ def baseline_dispatch(cfg: Config, lines: pd.DataFrame, orders: pd.DataFrame):
                     "illustrative_conflicts": ";".join(found),
                     "planned_departure": f"{date} {info['departure_time']}:00",
                     "x_truck_no": k,
+                    "x_hired": k == len(bins) > 1,
                 }
             )
     return pd.DataFrame(truck_rows), assign

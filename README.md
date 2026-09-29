@@ -17,9 +17,12 @@ uv run python -m portsim --out out
 uv run pytest
 ```
 
-Options: `--seed`, `--days` (default 14), `--start-date` (default 2026-09-14), `--no-trajectories`, `--no-messy`.
-The same seed gives byte-identical files. A 14-day run takes a few seconds and under 0.2 GB of memory; output is
-about 6 MB.
+Options: `--seed`, `--days` (1 to 365, default 14), `--start-date` (default 2026-09-14), `--no-trajectories`,
+`--no-messy`. The same seed gives byte-identical files, whatever `PYTHONHASHSEED` is. A 14-day run takes a few
+seconds and under 0.2 GB of memory; output is about 6 MB.
+
+Read the CSVs with `dtype=str` (e.g. `pd.read_csv(path, dtype=str, keep_default_na=False)`): otherwise pandas turns
+hazmat classes such as `3` into `3.0` and empty cells into NaN.
 
 ## Output
 
@@ -33,7 +36,9 @@ out/
 ```
 
 For the rehearsal, hand out `messy/`, `clean/{lines,docks,vehicle_types,hazmat_rules_illustrative,trajectories}.csv`,
-`data_dictionary.md` and `scenario_brief_zh.md`. Keep the other clean tables and `answer_key/` for scoring.
+`data_dictionary.md` and `scenario_brief_zh.md`. Keep the other clean tables and `answer_key/` for scoring. The messy
+orders carry each order's delivery visit (送货作业编号) and baseline truck (干线车次), as real exports do, so today's
+dispatch can be rebuilt from them; the clean tables are withheld for the data-cleaning part, not to hide it.
 
 ## What the default seed produces (14 days)
 
@@ -41,21 +46,26 @@ From `answer_key/baseline_summary.json`:
 
 | | Value |
 |---|---|
-| orders | 9,206 |
-| dock visits | 7,878 (about 560 a day) |
-| mean queue wait, own docks only (today) | 35 min; p90 126 min; 20% wait over an hour |
-| same arrivals, any dock, 15 min extra on another line's dock (naive reference) | 10 min |
-| linehaul trucks, lines load only their own orders (today) | 35 a day, mean load factor 0.68, 31% under 0.6 |
-| trucks carrying hidden hazardous goods | 30 |
+| orders | 9,292 |
+| dock visits | 7,738 (about 550 a day) |
+| mean wait before service, own docks only (today) | 28 min (26 queueing for a dock, 2 waiting for cargo); p90 92 min; 16% wait over an hour |
+| same arrivals, any dock, 15 min extra on another line's dock (naive reference) | 8 min |
+| linehaul trucks leaving after their planned departure (today) | 20%, 77 min late on average when late |
+| linehaul trucks, lines load only their own orders (today) | 34 a day, mean load factor 0.58, 53% under 0.6 |
+| trucks carrying hidden hazardous goods | 34 (36 orders) |
 
 So both skeletons of the team's thesis have room to show a saving: pooling docks at port level (skeleton A) and
 pooling orders across lines to the same city (skeleton B).
 
 ## Known simplifications
 
-- One port, straight-line truck movements, no road network.
-- Every order leaves the same evening; no carry-over, no capacity sold on the 配载 market.
+- One port, straight-line truck movements at constant speed, no road network, no slowdown near the port.
+- Every order leaves the same evening, and loading starts only after every order on the truck has been unloaded;
+  no carry-over. A line with one truck that day runs its own standard truck however empty; only an extra truck is
+  hired, at the smallest size that fits (at least 6.8m beyond 600 km).
+- Inbound cargo has no order records; each pickup van loads from one inbound truck, after it is unloaded.
 - Dock service time depends only on cargo volume and operation type; no crew or forklift limits.
+- Appointments are not checked against dock capacity; about 30% of booked trucks arrive after their slot ends.
 - `hazmat_rules_illustrative.csv` is not the JT/T 617.6 mixing table (not read); replace it before any claim.
 - Real hazardous-goods transport needs qualified vehicles and operators; here hazmat lines simply use H docks.
 

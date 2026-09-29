@@ -1,6 +1,8 @@
 """GPS pings for inbound linehaul trucks over the last 3 hours before the gate, with labelled anomalies.
 
-Trucks move on a straight line from their origin city toward the port; this is a toy geometry, not a road network.
+Trucks move on a straight line from their origin city toward the port at a constant speed; this is a toy geometry,
+not a road network, and there is no slowdown near the port. A truck whose trip is shorter than 3 hours has pings
+only from its departure onwards. Every ping with speed 0 lies inside a labelled long_stop.
 """
 
 from __future__ import annotations
@@ -26,21 +28,25 @@ def make_trajectories(ops: pd.DataFrame, lines: pd.DataFrame, rng: np.random.Gen
 
     inbound = ops[(ops["op_type"] == "linehaul_in") & ops["gate_in"].notna()].sort_values("op_id")
     pings, truth = [], []
-    taus = np.arange(0, 181, 5)
     for r in inbound.itertuples(index=False):
         ox, oy = to_km(*city_xy[dest_of[r.line_id]])
         dist = math.hypot(ox, oy)
         ux, uy = ox / dist, oy / dist
         v = 65 / 60 * rng.uniform(0.85, 1.15)  # km per minute
+        horizon = min(180, int(dist / v) // 5 * 5)  # minutes of driving shown before the gate
+        taus = np.arange(0, horizon + 1, 5)
         kind, t0, dur, amp = None, 0, 0, 0.0
         if rng.random() < p_anomaly:
             kind = ANOMALY_TYPES[int(rng.integers(len(ANOMALY_TYPES)))]
             dur = int({"long_stop": rng.integers(45, 91), "route_deviation": rng.integers(30, 61),
                        "signal_gap": rng.integers(40, 91)}[kind])
-            t0 = int(rng.integers(30, 181 - dur))
-            amp = float(rng.uniform(8, 15))
-            truth.append({"op_id": r.op_id, "plate": r.plate, "anomaly_type": kind,
-                          "start": int(r.gate_in) - t0 - dur, "end": int(r.gate_in) - t0})
+            if horizon - dur < 35:  # too short a trip to show this anomaly
+                kind = None
+            else:
+                t0 = int(rng.integers(30, horizon - dur))
+                amp = float(rng.uniform(8, 15))
+                truth.append({"op_id": r.op_id, "plate": r.plate, "anomaly_type": kind,
+                              "start": int(r.gate_in) - t0 - dur, "end": int(r.gate_in) - t0})
         noise = rng.normal(0, 0.03, size=(len(taus), 2))
         spd_noise = rng.normal(0, 5, size=len(taus))
         for i, tau in enumerate(taus):
@@ -56,7 +62,7 @@ def make_trajectories(ops: pd.DataFrame, lines: pd.DataFrame, rng: np.random.Gen
                 off = amp * math.sin(math.pi * (tau - t0) / dur)
                 x, y = x - uy * off, y + ux * off
             x, y = x + noise[i, 0], y + noise[i, 1]
-            stopped = (kind == "long_stop" and in_window) or rem >= dist
+            stopped = kind == "long_stop" and in_window
             speed = 0.0 if stopped else max(0.0, v * 60 + spd_noise[i])
             pings.append({
                 "op_id": r.op_id,

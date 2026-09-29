@@ -35,7 +35,7 @@ a Transfar port. Change them in `portsim/config.py` and `portsim/reference.py`.
 | destination | destination city |
 | distance_km | approximate road distance from Hangzhou |
 | hazmat_qualified | True for the two hazmat lines |
-| standard_vehicle | the truck type the line normally runs |
+| standard_vehicle | the truck type the line normally runs: sized by expected daily volume for general lines, by expected weight for hazmat lines |
 | departure_time | daily linehaul departure (HH:MM) |
 | docks_owned | general docks the line rents (0 for hazmat lines) |
 
@@ -63,13 +63,14 @@ the volume (`volume_fill_limit`), except that a leftover under 3 m3 may fill a t
 | shipper_id | S0001 to S0600 |
 | category | goods category; 危险品 for hazmat lines |
 | description | free text, item and pieces, e.g. 女装 8箱 |
-| weight_kg, volume_m3, pieces | size of the order |
-| hazmat_class | UN class (2.1, 3, 4.1, 5.1, 6.1, 8, 9) for hazmat lines, else empty |
+| weight_kg, volume_m3, pieces | size of the order; volume is at most 12 m3 (a larger LTL order would ship as a full truck) |
+| hazmat_class | UN class (2.1, 3, 4.1, 5.1, 6.1, 8, 9) for hazmat lines, else empty; read it as text |
 | dropoff_event_id | the delivery_in gate event that brought it |
 | baseline_truck_id | the linehaul truck it left on under today's practice |
 
 About 0.4% of general-line orders hide hazardous goods: the description names the item (油漆, 锂电池, 打火机 ...),
-while category is ordinary and hazmat_class is empty. They are listed in `answer_key/undeclared_hazmat.csv`.
+while category is ordinary and hazmat_class is empty. Their weight, density and unit are drawn like any order of the
+declared category, so the item name is the only clue. They are listed in `answer_key/undeclared_hazmat.csv`.
 
 ## clean/baseline_dispatch.csv (one row per linehaul truck, today's practice)
 
@@ -77,39 +78,48 @@ truck_id, date, line_id, destination, vehicle_type, n_orders, weight_kg, volume_
 load_factor_weight, load_factor (the larger of the two), hazmat_classes, illustrative_conflicts (pairs from
 `hazmat_rules_illustrative.csv` present on the truck), planned_departure.
 
-Each line packs its own orders first-fit-decreasing into its standard truck; the last truck of the day is the
-smallest size that fits the remainder.
+Each line packs its own orders first-fit-decreasing into its standard trucks. A line with one truck that day runs
+its standard truck however empty. When more are needed, the last one is hired at the smallest size that fits the
+remainder, and at least 6.8m on routes over 600 km. Plates of hired trucks are separate from the line's own fleet.
 
 ## clean/appointments.csv
 
 appointment_id, plate, line_id, op_type, vehicle_type, slot_start, slot_end (30-minute slots). Booked shares:
 delivery_in 30%, linehaul_out 85%, linehaul_in 80%, pickup_out 40%; the rest walk in. About 5% of booked pickup
-vans never come (no gate event: a no-show is an appointment without a matching gate event).
+vans never come (no gate event: a no-show is an appointment without a matching gate event); that is about 1% of all
+appointments (31 of 2,953 in the default run). Slots are not checked against dock capacity, and about 30% of
+booked trucks arrive after their slot ends.
 
 ## clean/gate_events.csv (one row per truck visit to a dock)
 
 | Column | Meaning |
 |---|---|
 | event_id | E + sequence |
-| date | the planned day |
-| plate | licence plate; linehaul trucks carry the destination province's prefix, vans 浙A |
+| date | the planned day (a few exits fall after midnight) |
+| plate | licence plate; linehaul trucks carry the destination province's prefix, vans 浙A. A plate is one vehicle of one type, never at the port twice at once |
 | appointment_id | empty for walk-ins |
 | line_id, op_type, vehicle_type | who and what |
 | cargo_volume_m3 | cargo handled at the dock |
 | hazmat | True for hazmat-line trucks (they use H docks) |
 | truck_id | for linehaul_out, the baseline_dispatch truck |
-| gate_in, dock_start, dock_end, gate_out | timestamps; queue wait = dock_start - gate_in - 5 min drive |
+| gate_in, dock_start, dock_end, gate_out | timestamps; wait = dock_start - gate_in - 5 min drive |
 
 Service time at the dock = 10 min + rate x volume (rate per m3: delivery_in 2.5, linehaul_in 1.8, linehaul_out
 2.2, pickup_out 2.0 min) with random spread, plus 10 min for hazmat. Booked trucks arrive off their slot by a
-random delay; 6% of inbound linehaul trucks are 1 to 4 hours late.
+random delay; 6% of booked inbound linehaul trucks (about 5% of all) are 1 to 4 hours late.
+
+A truck's wait has two parts. It waits for its cargo: a linehaul truck starts loading only after every order on it
+has been unloaded from its delivery van, and a pickup van (which collects from one inbound truck) only after that
+truck is unloaded. Then it queues for a dock, first come first served; among equally good docks the one idle
+longest is taken.
 
 ## clean/trajectories.csv
 
 GPS pings every 5 minutes over the last 3 hours before each inbound linehaul truck reaches the gate: event_id,
-plate, ts, lat, lon, speed_kmh. The truck moves on a straight line from its origin city (toy geometry, not
-roads). About 6% of trucks have one anomaly (long_stop, route_deviation, signal_gap), listed in
-`answer_key/trajectory_anomalies.csv`.
+plate, ts, lat, lon, speed_kmh. The truck moves on a straight line from its origin city at constant speed (toy
+geometry, not roads); a truck whose trip is shorter than 3 hours (Shanghai) has pings from its departure only.
+About 6% of trucks have one anomaly (long_stop, route_deviation, signal_gap), listed in
+`answer_key/trajectory_anomalies.csv`; every ping with speed 0 lies inside a labelled long_stop.
 
 ## clean/hazmat_rules_illustrative.csv
 
@@ -127,9 +137,9 @@ The same three tables as business exports usually arrive. Headers in Chinese; `o
 | missing cells | orders: shipper, category, pieces, volume; gate_events: dock, gate_out, plate; appointments: vehicle type | 2% per column |
 | other time formats (2026/9/14 8:05, 14-09-2026 08:05, 20260914080500) | time columns | 15% |
 | plate formats (浙A·12345, lower case, spaces) | plates | 5% |
-| weight with units (0.151t, 151kg, 151公斤) | orders 重量 | 16% |
-| dock_end before dock_start | gate_events | 0.3% |
-| year 2025 in gate_in | gate_events | 0.2% |
+| weight with units (0.1507t, 150.7kg, 150.7公斤) | orders 重量 | 16% |
+| dock_end before dock_start (the two swapped) | gate_events | 0.3% |
+| the year before the run's year in gate_in | gate_events | 0.2% |
 | negative volume | orders | 0.2% |
 
 Header mapping (clean → messy):
@@ -142,7 +152,9 @@ Header mapping (clean → messy):
 
 ## answer_key/
 
-- `baseline_summary.json`: the config, counts, baseline dock KPIs, a naive pooled reference (any dock, first come
-  first served, 15 min extra handling on another line's dock; a reference, not a solution) and baseline dispatch
-  KPIs.
-- `undeclared_hazmat.csv`, `trajectory_anomalies.csv`, `messy_injected_issues.csv` (table, key, column, issue).
+- `baseline_summary.json`: the config, counts, baseline dock KPIs (wait split into queueing and waiting for cargo,
+  late linehaul departures), a naive pooled reference (any dock, first come first served, 15 min extra handling on
+  another line's dock; a reference, not a solution) and baseline dispatch KPIs.
+- `undeclared_hazmat.csv`, `trajectory_anomalies.csv`, `messy_injected_issues.csv` (table, key, column, issue): one
+  row per changed cell, so a swapped dock_start/dock_end pair is two rows; a duplicated row is an exact copy of the
+  row after the other injections and is listed once with an empty column.

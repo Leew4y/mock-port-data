@@ -1,4 +1,4 @@
-"""Lines (tenants), docks, local plates and LTL orders."""
+"""Lines (tenants), docks, licence plates and LTL orders."""
 
 from __future__ import annotations
 
@@ -11,16 +11,30 @@ import pandas as pd
 from . import reference as ref
 from .config import Config
 
-# a line runs the smallest truck whose usable volume covers its expected day (m3 limits)
+# a general line runs the smallest truck whose usable volume covers its expected day (m3 limits)
 STANDARD_VEHICLE_LIMITS = [("6.8m", 30), ("9.6m", 45), ("13m", 65)]
+# a hazmat line's goods are dense, so its truck is sized by expected weight (kg limits)
+HAZMAT_MEAN_ORDER_KG = 380
+HAZMAT_VEHICLE_LIMITS = [("6.8m", 6_000), ("9.6m", 12_000)]
+OUT_FLEET, IN_FLEET = 6, 6  # a line's own trucks: those loading here, and those arriving from the destination side
 PLATE_CHARS = [c for c in string.ascii_uppercase if c not in "IO"] + list(string.digits) * 3
 
 
-def make_plate(rng: np.random.Generator, prefix: str) -> str:
-    return prefix + "".join(rng.choice(PLATE_CHARS, size=5))
+class PlateBook:
+    """Every plate in the dataset is issued here, so no two vehicles share one."""
+
+    def __init__(self):
+        self.issued: set[str] = set()
+
+    def new(self, rng: np.random.Generator, prefix: str) -> str:
+        while True:
+            plate = prefix + "".join(rng.choice(PLATE_CHARS, size=5))
+            if plate not in self.issued:
+                self.issued.add(plate)
+                return plate
 
 
-def make_lines(cfg: Config, rng: np.random.Generator) -> pd.DataFrame:
+def make_lines(cfg: Config, rng: np.random.Generator, book: PlateBook) -> pd.DataFrame:
     n_dest = len(ref.DESTINATIONS)
     base = list(range(n_dest)) * (cfg.n_general_lines // n_dest)
     extra = rng.choice(n_dest, size=cfg.n_general_lines - len(base), replace=False).tolist()
@@ -41,12 +55,14 @@ def make_lines(cfg: Config, rng: np.random.Generator) -> pd.DataFrame:
         k = letters_used.get(d, 0)
         letters_used[d] = k + 1
         if hazmat:
-            vehicle, name = "9.6m", f"{city}危险品专线"
+            expected_kg = lam * HAZMAT_MEAN_ORDER_KG
+            vehicle = next((vt for vt, limit in HAZMAT_VEHICLE_LIMITS if expected_kg <= limit), "13m")
+            name = f"{city}危险品专线"
         else:
             expected_m3 = lam * cfg.mean_order_volume_m3
             vehicle = next((vt for vt, limit in STANDARD_VEHICLE_LIMITS if expected_m3 <= limit), "17.5m")
             name = f"{city}专线{string.ascii_uppercase[k]}"
-        fleet = [make_plate(rng, plate_prefix) for _ in range(8)]
+        fleet = [book.new(rng, plate_prefix) for _ in range(OUT_FLEET + IN_FLEET)]
         rows.append(
             {
                 "line_id": f"L{i:02d}",
@@ -57,6 +73,7 @@ def make_lines(cfg: Config, rng: np.random.Generator) -> pd.DataFrame:
                 "standard_vehicle": vehicle,
                 "departure_time": str(rng.choice(ref.DEPARTURE_TIMES)),
                 "x_lam": float(lam),
+                "x_prefix": plate_prefix,
                 "x_fleet": fleet,
             }
         )
@@ -90,10 +107,6 @@ def make_docks(cfg: Config, lines: pd.DataFrame) -> pd.DataFrame:
     return docks
 
 
-def make_local_plates(rng: np.random.Generator, n: int = 3000) -> list[str]:
-    return [make_plate(rng, ref.LOCAL_PLATE_PREFIX) for _ in range(n)]
-
-
 def make_orders(cfg: Config, lines: pd.DataFrame, rng: np.random.Generator):
     """Return (orders, undeclared_key). Orders are the parcels shippers hand to a line on one day."""
     cats = list(ref.CATEGORIES)
@@ -120,18 +133,23 @@ def make_orders(cfg: Config, lines: pd.DataFrame, rng: np.random.Generator):
                     weight = float(np.clip(rng.lognormal(math.log(300), 0.7), 20, 1500))
                     density = 900 * rng.lognormal(0.0, 0.15)
                     item = str(rng.choice(items))
-                elif rng.random() < cfg.p_undeclared_hazmat:
-                    item, likely, category, unit = ref.UNDECLARED_ITEMS[int(rng.integers(len(ref.UNDECLARED_ITEMS)))]
-                    weight = float(np.clip(rng.lognormal(math.log(150), 0.6), 10, 800))
-                    density = 800 * rng.lognormal(0.0, 0.15)
-                    key.append({"order_id": oid, "item": item, "likely_class": likely})
                 else:
-                    category = str(rng.choice(cats, p=cat_p))
+                    hidden = rng.random() < cfg.p_undeclared_hazmat
+                    if hidden:
+                        item, likely, category = ref.UNDECLARED_ITEMS[int(rng.integers(len(ref.UNDECLARED_ITEMS)))]
+                        key.append({"order_id": oid, "item": item, "likely_class": likely})
+                    else:
+                        category = str(rng.choice(cats, p=cat_p))
                     _, dens, items, unit = ref.CATEGORIES[category]
+                    if not hidden:
+                        item = str(rng.choice(items))
                     weight = float(np.clip(rng.lognormal(math.log(250), 0.9), 5, 3000))
                     density = dens * rng.lognormal(0.0, 0.2)
-                    item = str(rng.choice(items))
-                volume = max(0.05, weight / density)
+                volume = weight / density
+                if volume > cfg.max_order_volume_m3:  # light goods: cap the order at an LTL size
+                    volume = cfg.max_order_volume_m3 * rng.uniform(0.7, 1.0)
+                    weight = volume * density
+                volume = max(0.05, volume)
                 pieces = max(1, int(round(volume / 0.1 * rng.uniform(0.6, 1.4))))
                 rows.append(
                     {
