@@ -71,7 +71,9 @@ mostly from when trucks arrive to load and how long loading takes, so do not cla
 - The pooled 8 min figure is never a saving: it uses an invented 15 min penalty for another line's dock, and the
   port parameters were chosen so that queues appear.
 - No number from this data is presented as a Transfar figure or a real port's figure.
-- `hazmat_rules_illustrative.csv` stays illustrative; a claim about hazardous-goods mixing needs the JT/T 617 text.
+
+Separately, as a fact about the data: `hazmat_rules_illustrative.csv` is illustrative; a claim about
+hazardous-goods mixing needs the JT/T 617 text.
 
 ## Known simplifications
 

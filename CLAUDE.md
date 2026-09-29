@@ -14,7 +14,7 @@ sessions there, not here: a session opened here gets a separate, empty memory st
 ## Commands
 
 ```bash
-uv run pytest -q                       # 42 tests, about 35 s
+uv run pytest -q                       # 42 tests, about 20 s to a minute depending on load
 uv run python -m portsim --out out     # about 5 s, 6 MB
 ```
 
